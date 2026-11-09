@@ -21,14 +21,24 @@ type config struct {
 	YNABAccountID    string `env:"YNAB_ACCOUNT_ID,required"`
 	// SyncDays controls how far back to look for Splitwise expenses.
 	// YNAB deduplicates by import_id so re-syncing old expenses is safe.
-	SyncDays int    `env:"SYNC_DAYS,default=30"`
-	Port     string `env:"PORT,default=8080"`
+	SyncDays     int           `env:"SYNC_DAYS,default=30"`
+	SyncInterval time.Duration `env:"SYNC_INTERVAL,default=0"`
+	// ListenAddr overrides :PORT when set (e.g. 127.0.0.1:8080 for homelab).
+	Port       string `env:"PORT,default=8080"`
+	ListenAddr string `env:"LISTEN_ADDR"`
+}
+
+func (c *config) listenAddr() string {
+	if c.ListenAddr != "" {
+		return c.ListenAddr
+	}
+	return ":" + c.Port
 }
 
 type syncer struct {
-	sw        *splitwise.Client
-	yn        *ynab.Client
-	cfg       *config
+	sw  *splitwise.Client
+	yn  *ynab.Client
+	cfg *config
 }
 
 func (s *syncer) sync(ctx context.Context) error {
@@ -78,6 +88,26 @@ func (s *syncer) sync(ctx context.Context) error {
 	return nil
 }
 
+// run calls fn immediately, then calls it again on each interval tick until ctx
+// is cancelled. Errors from fn are logged but do not stop the loop.
+func run(ctx context.Context, interval time.Duration, fn func(context.Context) error) {
+	if err := fn(ctx); err != nil {
+		clog.ErrorContext(ctx, "sync failed", "err", err)
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := fn(ctx); err != nil {
+				clog.ErrorContext(ctx, "sync failed", "err", err)
+			}
+		}
+	}
+}
+
 func main() {
 	ctx := context.Background()
 	cfg := envconfig.MustProcess(ctx, &config{})
@@ -86,6 +116,10 @@ func main() {
 		sw:  splitwise.NewClient(cfg.SplitwiseAPIKey),
 		yn:  ynab.NewClient(cfg.YNABAPIKey),
 		cfg: cfg,
+	}
+
+	if cfg.SyncInterval > 0 {
+		go run(ctx, cfg.SyncInterval, s.sync)
 	}
 
 	http.HandleFunc("/sync", func(w http.ResponseWriter, r *http.Request) {
@@ -105,8 +139,9 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	clog.InfoContext(ctx, "listening", "port", cfg.Port)
-	if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
+	addr := cfg.listenAddr()
+	clog.InfoContext(ctx, "listening", "addr", addr)
+	if err := http.ListenAndServe(addr, nil); err != nil {
 		clog.FatalContextf(ctx, "server: %v", err)
 	}
 }
