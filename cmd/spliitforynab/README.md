@@ -2,6 +2,33 @@
 
 Go service that imports [Spliit Cloud](https://github.com/antonio-ivanovski/spliit-cloud) group expenses into [YNAB](https://ynab.com) for a single user. No UI, no database — YNAB's `import_id` deduplication makes re-syncs safe.
 
+## Image
+
+`ghcr.io/pdeslaur/oci-spliitforynab`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. It's built with [ko](https://ko.build) on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview) by this repo's [build workflow](.github/workflows/build.yaml), and rebuilt daily to pick up base image fixes. Verify its signature with:
+
+```sh
+cosign verify ghcr.io/pdeslaur/oci-spliitforynab:latest \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --certificate-identity https://github.com/pdeslaur/oci-spliitforynab/.github/workflows/build.yaml@refs/heads/main
+```
+
+## Usage
+
+```sh
+podman run -d --restart=always \
+    -e SPLIIT_URL=https://spliit.example.com \
+    -e SPLIIT_GROUP_ID=... \
+    -e YNAB_API_KEY=... \
+    -e YNAB_BUDGET_ID=... \
+    -e YNAB_ACCOUNT_ID=... \
+    -e SYNC_INTERVAL=1h \
+    -v spliitforynab:/data \
+    -p 127.0.0.1:8080:8080 \
+    ghcr.io/pdeslaur/oci-spliitforynab:latest
+```
+
+Then open <http://127.0.0.1:8080/login> to sign in. Publishing the port on `127.0.0.1` keeps the service on the host's loopback.
+
 ## How it works
 
 `POST /sync` fetches expenses from a Spliit group for the last `SYNC_DAYS` days, computes each expense's net balance for the signed-in user (paid minus owed share), and imports them into a YNAB account as cleared transactions. Settlements are skipped. Expenses are keyed by `spliit:<id>` so YNAB silently drops duplicates on subsequent syncs.
@@ -32,7 +59,7 @@ Spliit refresh tokens are single-use and last 30 days: every refresh returns a n
 | `SYNC_DAYS` | no | `30` | How many days back to fetch expenses |
 | `SYNC_INTERVAL` | no | — | Auto-sync interval (e.g. `1h`). Zero disables the loop; use `POST /sync` or an external scheduler instead |
 | `PORT` | no | `8080` | HTTP listen port (overridden by `LISTEN_ADDR`) |
-| `LISTEN_ADDR` | no | `:PORT` | Full listen address. Set to `127.0.0.1:8080` to restrict to loopback |
+| `LISTEN_ADDR` | no | `:PORT` | Full listen address. `127.0.0.1:8080` restricts it to loopback, which suits host networking or a pod shared with a reverse proxy. With a published port, publish it on `127.0.0.1` instead |
 
 Get a YNAB personal access token at <https://app.ynab.com/settings/developer>.
 
@@ -45,24 +72,6 @@ Get a YNAB personal access token at <https://app.ynab.com/settings/developer>.
 
 `/login` and `/sync` act on the shared Spliit grant, so put the service behind authentication (or keep it on loopback) wherever it's reachable by others.
 
-## Deployment
+## Updates
 
-The image is published to `ghcr.io/pdeslaur/oci-spliitforynab` as a multi-arch manifest (amd64 + arm64).
-
-**Homelab (Podman on Raspberry Pi):**
-
-```
-podman run -d --restart=always \
-  -e SPLIIT_URL=https://spliit.example.com \
-  -e SPLIIT_GROUP_ID=... \
-  -e YNAB_API_KEY=... \
-  -e YNAB_BUDGET_ID=... \
-  -e YNAB_ACCOUNT_ID=... \
-  -e SYNC_INTERVAL=1h \
-  -e LISTEN_ADDR=127.0.0.1:8080 \
-  -v spliitforynab:/data \
-  -p 127.0.0.1:8080:8080 \
-  ghcr.io/pdeslaur/oci-spliitforynab:latest
-```
-
-Then open <http://127.0.0.1:8080/login> to sign in.
+[Dependabot](.github/dependabot.yml) checks for Go module updates daily, and the image is rebuilt daily to pick up base image fixes.
