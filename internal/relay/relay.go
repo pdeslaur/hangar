@@ -88,6 +88,13 @@ type Relay struct {
 // keys' seeds.
 const secretSeeds id.Secret = "matrix-relay.cross_signing_seeds"
 
+// minTrust is the trust a device needs for the relay to share the rooms' keys
+// with it, and to forward its messages: cross-signed by its user, with the
+// master key the homeserver has for the user, even one other than the relay
+// first saw, so that it keeps trusting users who reset their keys. A device
+// added with a user's access token alone, unsigned, falls short.
+const minTrust = id.TrustStateCrossSignedUntrusted
+
 // Open logs in on the device the store holds, or on a device the homeserver
 // creates for an empty store, and sets up its end-to-end encryption: its
 // device keys, and cross-signing keys signing its device, so that clients
@@ -168,6 +175,10 @@ func (r *Relay) open(ctx context.Context, pickleKey []byte) error {
 		return fmt.Errorf("setting up encryption: %w", err)
 	}
 	r.cli.Crypto = r.crypto
+	// It shares the rooms' keys only with devices their users cross-signed,
+	// so that a device added with a user's access token alone can't read
+	// its messages.
+	r.crypto.Machine().SendKeysMinTrust = minTrust
 	if err := r.crossSign(ctx, store); err != nil {
 		return fmt.Errorf("cross-signing: %w", err)
 	}
@@ -385,10 +396,18 @@ func (r *Relay) onMember(ctx context.Context, evt *event.Event) {
 	}
 }
 
-// onMessage forwards messages allowed users send after it started.
+// onMessage forwards messages allowed users send after it started, from
+// devices they cross-signed. It drops messages sent in the clear, or
+// encrypted by a device its user didn't sign, which anything holding the
+// user's access token, or the homeserver, could send.
 func (r *Relay) onMessage(ctx context.Context, evt *event.Event) {
 	if r.cfg.InboundURL == "" || !r.allowed[evt.Sender] || evt.Sender == r.cli.UserID ||
 		time.UnixMilli(evt.Timestamp).Before(r.started) {
+		return
+	}
+	if !evt.Mautrix.WasEncrypted || evt.Mautrix.TrustState < minTrust {
+		clog.WarnContext(ctx, "dropping a message from an untrusted device", "room_id", evt.RoomID, "event_id", evt.ID,
+			"sender", evt.Sender, "encrypted", evt.Mautrix.WasEncrypted, "trust", evt.Mautrix.TrustState.String())
 		return
 	}
 	msg := evt.Content.AsMessage()

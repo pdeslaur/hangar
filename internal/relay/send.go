@@ -38,6 +38,12 @@ func (r *Relay) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// Browsers send these on POSTs, and apps don't: refusing them keeps web
+	// pages, cross-origin or through DNS rebinding, from sending.
+	if req.Header.Get("Origin") != "" || req.Header.Get("Sec-Fetch-Site") != "" {
+		http.Error(w, "browsers can't send", http.StatusForbidden)
+		return
+	}
 	select {
 	case <-r.ready:
 	default:

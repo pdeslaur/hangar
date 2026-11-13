@@ -243,6 +243,8 @@ func startRelay(t *testing.T, url, dir string, logins *atomic.Int32, in *inbound
 type user struct {
 	*mautrix.Client
 	messages chan *event.Event
+	// withheld are the room keys senders withheld from its device.
+	withheld chan *event.RoomKeyWithheldEventContent
 }
 
 // login logs localpart in with its password, with its crypto store in dir,
@@ -253,7 +255,7 @@ func login(t *testing.T, url, localpart, dir string) *user {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := dbutil.NewWithDialect("file:"+filepath.Join(dir, localpart+".db")+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_txlock=immediate", "sqlite")
+	db, err := dbutil.NewWithDialect("file:"+filepath.Join(dir, localpart+".db")+"?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate", "sqlite")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,9 +272,13 @@ func login(t *testing.T, url, localpart, dir string) *user {
 		t.Fatalf("logging in %s: %v", localpart, err)
 	}
 	cli.Crypto = helper
-	u := &user{Client: cli, messages: make(chan *event.Event, 16)}
-	cli.Syncer.(*mautrix.DefaultSyncer).OnEventType(event.EventMessage, func(_ context.Context, evt *event.Event) {
+	u := &user{Client: cli, messages: make(chan *event.Event, 16), withheld: make(chan *event.RoomKeyWithheldEventContent, 16)}
+	syncer := cli.Syncer.(*mautrix.DefaultSyncer)
+	syncer.OnEventType(event.EventMessage, func(_ context.Context, evt *event.Event) {
 		u.messages <- evt
+	})
+	syncer.OnEventType(event.ToDeviceRoomKeyWithheld, func(_ context.Context, evt *event.Event) {
+		u.withheld <- evt.Content.AsRoomKeyWithheld()
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -283,6 +289,31 @@ func login(t *testing.T, url, localpart, dir string) *user {
 		helper.Close()
 	})
 	return u
+}
+
+// crossSign publishes cross-signing keys for u's user and signs its device
+// with them, as clients do, so that the relay trusts the device. Replacing
+// the user's keys, it completes user-interactive auth with u's password.
+func (u *user) crossSign(t *testing.T) {
+	t.Helper()
+	mach := u.Crypto.(*cryptohelper.CryptoHelper).Machine()
+	keys, err := mach.GenerateCrossSigningKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := func(uia *mautrix.RespUserInteractive) any {
+		return &mautrix.ReqUIAuthLogin{
+			BaseAuthData: mautrix.BaseAuthData{Type: mautrix.AuthTypePassword, Session: uia.Session},
+			User:         u.UserID.String(),
+			Password:     password,
+		}
+	}
+	if err := mach.PublishCrossSigningKeys(t.Context(), keys, auth); err != nil {
+		t.Fatalf("publishing %s's cross-signing keys: %v", u.UserID, err)
+	}
+	if err := mach.SignOwnDevice(t.Context(), mach.OwnIdentity()); err != nil {
+		t.Fatalf("signing %s's device: %v", u.UserID, err)
+	}
 }
 
 // createRoom creates an encrypted room inviting invitee.
@@ -360,7 +391,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 // TestRelay checks that the relay joins the rooms of allowed users only,
-// sends and forwards messages encrypted, and cross-signs its device.
+// sends and forwards messages encrypted, with their cross-signed devices
+// only, and cross-signs its device.
 func TestRelay(t *testing.T) {
 	url := startTuwunel(t, time.Hour)
 	dir := t.TempDir()
@@ -368,12 +400,20 @@ func TestRelay(t *testing.T) {
 	in := newInbound(t)
 	r := startRelay(t, url, filepath.Join(dir, "relay"), &logins, in)
 	phil := login(t, url, "phil", dir)
+	phil.crossSign(t)
+	// A device of phil's that phil didn't cross-sign, like one the
+	// homeserver adds.
+	unverified := login(t, url, "phil", t.TempDir())
 	mallory := login(t, url, "mallory", dir)
 	bot := r.UserID()
 
 	room := phil.createRoom(t, bot)
 	waitFor(t, "the relay to join phil's room", func() bool {
 		return phil.membership(t, room, bot) == event.MembershipJoin
+	})
+	waitFor(t, "phil's unverified device to know the room is encrypted", func() bool {
+		encrypted, err := unverified.StateStore.IsEncrypted(t.Context(), room)
+		return err == nil && encrypted
 	})
 	other := mallory.createRoom(t, bot)
 	waitFor(t, "the relay to decline mallory's invite", func() bool {
@@ -389,7 +429,19 @@ func TestRelay(t *testing.T) {
 	if got := phil.receive(t, bot).Content.AsMessage().MsgType; got != event.MsgNotice {
 		t.Errorf("notice sent as %s", got)
 	}
+	select {
+	case w := <-unverified.withheld:
+		if w.RoomID != room || w.Code != event.RoomKeyWithheldUnverified {
+			t.Errorf("withheld %+v, want room %s's key withheld as %s", w, room, event.RoomKeyWithheldUnverified)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the relay didn't withhold the room's key from phil's unverified device")
+	}
 
+	// The relay drops the unverified device's message, and forwards the next.
+	if _, err := unverified.SendText(t.Context(), room, "from an unverified device"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := phil.SendText(t.Context(), room, "to the relay"); err != nil {
 		t.Fatal(err)
 	}
@@ -429,6 +481,7 @@ func TestRelayRestart(t *testing.T) {
 	dir := t.TempDir()
 	store := filepath.Join(dir, "relay")
 	phil := login(t, url, "phil", dir)
+	phil.crossSign(t)
 	var logins atomic.Int32
 
 	first := startRelay(t, url, store, &logins, nil)
@@ -511,6 +564,60 @@ func TestRelayReplacesKeys(t *testing.T) {
 	}
 }
 
+// TestRelayTrustsResetKeys checks that a relay goes on trusting the devices
+// of an allowed user who resets their cross-signing keys.
+func TestRelayTrustsResetKeys(t *testing.T) {
+	url := startTuwunel(t, time.Hour)
+	dir := t.TempDir()
+	var logins atomic.Int32
+	in := newInbound(t)
+	r := startRelay(t, url, filepath.Join(dir, "relay"), &logins, in)
+	phil := login(t, url, "phil", dir)
+	phil.crossSign(t)
+	bot := r.UserID()
+	room := phil.createRoom(t, bot)
+	waitFor(t, "the relay to join phil's room", func() bool {
+		return phil.membership(t, room, bot) == event.MembershipJoin
+	})
+	send(t, r, Message{Room: room.String(), Body: "before resetting"})
+	if got := phil.receive(t, bot).Content.AsMessage().Body; got != "before resetting" {
+		t.Errorf("phil received %q", got)
+	}
+
+	phil.crossSign(t)
+	mach := r.crypto.Machine()
+	var trust id.TrustState
+	waitFor(t, "the relay to see phil's reset keys", func() bool {
+		if _, err := mach.FetchKeys(t.Context(), []id.UserID{phil.UserID}, true); err != nil {
+			t.Fatal(err)
+		}
+		device, err := mach.GetOrFetchDevice(t.Context(), phil.UserID, phil.DeviceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if trust, err = mach.ResolveTrustContext(t.Context(), device); err != nil {
+			t.Fatal(err)
+		}
+		return trust == id.TrustStateCrossSignedUntrusted
+	})
+
+	send(t, r, Message{Room: room.String(), Body: "after resetting"})
+	if got := phil.receive(t, bot).Content.AsMessage().Body; got != "after resetting" {
+		t.Errorf("phil received %q", got)
+	}
+	if _, err := phil.SendText(t.Context(), room, "to the relay"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-in.messages:
+		if msg.Body != "to the relay" {
+			t.Errorf("forwarded %q, want %q", msg.Body, "to the relay")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the relay forwarded nothing from phil's device, which it trusts as %s", trust)
+	}
+}
+
 // TestRelayRenewal checks that a relay logs in again on its device before
 // its access token expires, and goes on sending.
 func TestRelayRenewal(t *testing.T) {
@@ -518,6 +625,7 @@ func TestRelayRenewal(t *testing.T) {
 	url := startTuwunel(t, ttl)
 	dir := t.TempDir()
 	phil := login(t, url, "phil", dir)
+	phil.crossSign(t)
 	var logins atomic.Int32
 	r := startRelay(t, url, filepath.Join(dir, "relay"), &logins, nil)
 	room := phil.createRoom(t, r.UserID())
