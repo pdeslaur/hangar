@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +29,7 @@ type tuwunel struct {
 }
 
 // startTuwunel runs the tuwunel image named by TUWUNEL_IMAGE with docker,
-// reading the config file signer writes. It creates the user "bot". Without
+// reading the config file signer writes. It creates the users "bot" and "phil". Without
 // TUWUNEL_IMAGE, the test is skipped.
 func startTuwunel(t *testing.T, signer *Signer) tuwunel {
 	t.Helper()
@@ -48,7 +50,7 @@ func startTuwunel(t *testing.T, signer *Signer) tuwunel {
 		"--env", "TUWUNEL_DATABASE_PATH=/tmp/db",
 		"--env", "TUWUNEL_ADDRESS=0.0.0.0",
 		"--env", "TUWUNEL_PORT=6167",
-		image, "--execute", "users create-user bot").Output()
+		image, "--execute", "users create-user bot", "--execute", "users create-user phil").Output()
 	if err != nil {
 		t.Fatalf("starting tuwunel: %v", err)
 	}
@@ -257,91 +259,126 @@ func TestTuwunelReload(t *testing.T) {
 	}
 }
 
-// uploadMasterKey uploads a master key for @bot:example.org with an access
-// token, and auth unless it's nil, returning tuwunel's status and response.
-func uploadMasterKey(t *testing.T, url, token string, auth any) (int, map[string]any) {
+// masterKey is a master key for @bot:example.org.
+func masterKey(t *testing.T) map[string]any {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := base64.RawStdEncoding.EncodeToString(pub)
-	request := map[string]any{
-		"master_key": map[string]any{
-			"user_id": "@bot:example.org",
-			"usage":   []string{"master"},
-			"keys":    map[string]string{"ed25519:" + key: key},
-		},
+	return map[string]any{
+		"user_id": "@bot:example.org",
+		"usage":   []any{"master"},
+		"keys":    map[string]any{"ed25519:" + key: key},
 	}
-	if auth != nil {
-		request["auth"] = auth
-	}
+}
+
+// post sends request as JSON to url, with token as a bearer token, returning
+// the status and response, its text under "error" when it isn't JSON.
+func post(t *testing.T, h http.Handler, url, token string, request any) (int, map[string]any) {
+	t.Helper()
 	b, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, err := http.NewRequest(http.MethodPost, url+"/_matrix/client/v3/keys/device_signing/upload", bytes.NewReader(b))
-	if err != nil {
-		t.Fatal(err)
-	}
+	req := httptest.NewRequest(http.MethodPost, url, bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 	var body map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		body = map[string]any{"error": rec.Body.String()}
 	}
-	return resp.StatusCode, body
+	return rec.Code, body
 }
 
-// TestTuwunelUIA checks that tuwunel takes a UIA for what needs
-// user-interactive auth, such as replacing a user's cross-signing keys.
-func TestTuwunelUIA(t *testing.T) {
+// proxy sends requests to tuwunel, at their URL.
+var proxy = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, r.URL.String(), r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header = r.Header
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+})
+
+// masterKeyOf answers @bot:example.org's master key, as tuwunel publishes it.
+func masterKeyOf(t *testing.T, url, token string) any {
+	t.Helper()
+	status, body := post(t, proxy, url+"/_matrix/client/v3/keys/query", token,
+		map[string]any{"device_keys": map[string][]string{"@bot:example.org": {}}})
+	if status != http.StatusOK {
+		t.Fatalf("querying keys: %d %v", status, body)
+	}
+	keys, _ := body["master_keys"].(map[string]any)
+	key, _ := keys["@bot:example.org"].(map[string]any)
+	return key["keys"]
+}
+
+// TestTuwunelCrossSigningKeys checks that it replaces a user's cross-signing
+// keys, which needs user-interactive auth, for the user's access token alone.
+func TestTuwunelCrossSigningKeys(t *testing.T) {
 	signer, err := NewSigner()
 	if err != nil {
 		t.Fatal(err)
 	}
 	url := startTuwunel(t, signer).url
 	ca := newAuthority(t)
+	const phil = "spiffe://example.org/phil"
 	h := &Handler{
 		Bundles:   ca.bundle,
 		Audience:  testAudience,
-		Users:     map[string]string{bot: "bot"},
+		Users:     map[string]string{bot: "bot", phil: "phil"},
 		Signer:    signer,
 		MatrixURL: url,
 		Client:    http.DefaultClient,
 	}
 	later := time.Now().Add(5 * time.Minute)
-	status, session := login(t, h, ca.svid(t, bot, testAudience, later), "")
-	if status != http.StatusOK {
-		t.Fatalf("logging in as bot: %d %v", status, session)
+	session := func(sub string) string {
+		t.Helper()
+		status, session := login(t, h, ca.svid(t, sub, testAudience, later), "")
+		if status != http.StatusOK {
+			t.Fatalf("logging in as %s: %d %v", sub, status, session)
+		}
+		return session["access_token"].(string)
 	}
-	token := session["access_token"].(string)
+	token := session(bot)
+	upload := url + "/_matrix/client/v3/keys/device_signing/upload"
 
 	// The first keys need no user-interactive auth; replacing them does.
-	if status, body := uploadMasterKey(t, url, token, nil); status != http.StatusOK {
+	first := masterKey(t)
+	if status, body := post(t, proxy, upload, token, map[string]any{"master_key": first}); status != http.StatusOK {
 		t.Fatalf("uploading the first master key: %d %v", status, body)
 	}
-	if status, body := uploadMasterKey(t, url, token, nil); status != http.StatusUnauthorized {
+	if status, body := post(t, proxy, upload, token, map[string]any{"master_key": masterKey(t)}); status != http.StatusUnauthorized {
 		t.Fatalf("replacing the master key without auth: %d %v, want %d", status, body, http.StatusUnauthorized)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, UIAPath, nil)
-	req.Header.Set("Authorization", "Bearer "+ca.svid(t, bot, testAudience, later))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("UIA: %d %s", rec.Code, rec.Body)
+	// Another user's access token replaces nothing.
+	if status, body := post(t, h, CrossSigningKeysPath, ca.svid(t, bot, testAudience, later),
+		map[string]any{"access_token": session(phil), "master_key": masterKey(t)}); status != http.StatusForbidden {
+		t.Errorf("replacing keys with phil's access token: %d %v, want %d", status, body, http.StatusForbidden)
 	}
-	var uia UIA
-	if err := json.Unmarshal(rec.Body.Bytes(), &uia); err != nil {
-		t.Fatal(err)
+	if got := masterKeyOf(t, url, token); !reflect.DeepEqual(got, first["keys"]) {
+		t.Errorf("master key %v after a refused replacement, want %v", got, first["keys"])
 	}
-	if status, body := uploadMasterKey(t, url, token, uia); status != http.StatusOK {
-		t.Errorf("replacing the master key with a UIA: %d %v", status, body)
+
+	second := masterKey(t)
+	if status, body := post(t, h, CrossSigningKeysPath, ca.svid(t, bot, testAudience, later),
+		map[string]any{"access_token": token, "master_key": second}); status != http.StatusOK {
+		t.Fatalf("replacing the master key: %d %v", status, body)
+	}
+	if got := masterKeyOf(t, url, token); !reflect.DeepEqual(got, second["keys"]) {
+		t.Errorf("master key %v, want %v", got, second["keys"])
 	}
 }

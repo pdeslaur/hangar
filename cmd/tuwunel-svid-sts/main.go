@@ -45,6 +45,17 @@ func main() {
 	}
 }
 
+// tuwunelClient calls tuwunel. It follows no redirect, which would send the
+// JWTs and access tokens of its requests elsewhere.
+func tuwunelClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func run(ctx context.Context, cfg *config) error {
 	signer, err := login.NewSigner()
 	if err != nil {
@@ -77,7 +88,7 @@ func run(ctx context.Context, cfg *config) error {
 			Users:     cfg.Users,
 			Signer:    signer,
 			MatrixURL: cfg.MatrixURL,
-			Client:    &http.Client{Timeout: 30 * time.Second},
+			Client:    tuwunelClient(),
 		},
 		ReadHeaderTimeout: 10 * time.Second,
 	}

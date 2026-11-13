@@ -21,10 +21,10 @@ import (
 // tuwunel generates ten capital letters.
 var deviceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-// maxRequest bounds the request body.
+// maxRequest bounds the body of a login request.
 const maxRequest = 4 << 10
 
-// Request is the optional JSON body of a request.
+// Request is the optional JSON body of a login request.
 type Request struct {
 	// DeviceID is the device to log in on, such as the one a client keeps
 	// end-to-end encryption keys for: logging in again on it adds an access
@@ -32,29 +32,41 @@ type Request struct {
 	DeviceID string `json:"device_id,omitempty"`
 }
 
+// CrossSigningKeysPath is the path replacing the caller's user's
+// cross-signing keys.
+const CrossSigningKeysPath = "/cross-signing-keys"
+
+// maxCrossSigningKeys bounds the body of a CrossSigningKeys request: three
+// keys, with their signatures.
+const maxCrossSigningKeys = 16 << 10
+
+// CrossSigningKeys is the JSON body of a request replacing the caller's
+// user's cross-signing keys, which needs user-interactive auth once the user
+// has some. The handler uploads them with the access token and, as auth, a
+// JWT it signs for the user, which never leaves its pod.
+type CrossSigningKeys struct {
+	// AccessToken is the caller's: it needs to be its user's.
+	AccessToken string `json:"access_token"`
+	// MasterKey, SelfSigningKey and UserSigningKey are the keys, as in the
+	// request uploading them.
+	MasterKey      json.RawMessage `json:"master_key"`
+	SelfSigningKey json.RawMessage `json:"self_signing_key,omitempty"`
+	UserSigningKey json.RawMessage `json:"user_signing_key,omitempty"`
+}
+
 // maxResponse bounds how much of tuwunel's response it relays.
 const maxResponse = 64 << 10
 
-// UIAPath is the path answering user-interactive auth for the caller's user.
-const UIAPath = "/uia"
-
-// UIA is the auth of a request needing user-interactive auth, such as
-// replacing a user's cross-signing keys: tuwunel takes a JWT it would log
-// the user in with.
-type UIA struct {
-	Type  string `json:"type"`
-	Token string `json:"token"`
-}
-
 // Handler answers POST requests carrying a JWT-SVID as a bearer token, for
 // the Matrix user the SVID's SPIFFE ID maps to. At /, with optionally a
-// Request, it answers the response of tuwunel's login endpoint; at UIAPath,
-// a UIA. Either logs the user in: a UIA's JWT lasts as long as a login's.
+// Request, it answers the response of tuwunel's login endpoint; at
+// CrossSigningKeysPath, with CrossSigningKeys, the response of its endpoint
+// uploading them.
 type Handler struct {
 	// Bundles verifies JWT-SVIDs; the Workload API's keeps up with the
 	// SPIRE server's key rotation.
 	Bundles jwtbundle.Source
-	// Audience is the aud a JWT-SVID needs.
+	// Audience is the aud a JWT-SVID needs, as its only one.
 	Audience string
 	// Users maps SPIFFE IDs to the Matrix localparts they log in as. Other
 	// SPIFFE IDs are refused.
@@ -74,7 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.URL.Path != "/" && r.URL.Path != UIAPath {
+	if r.URL.Path != "/" && r.URL.Path != CrossSigningKeysPath {
 		http.NotFound(w, r)
 		return
 	}
@@ -90,6 +102,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JWT-SVID", http.StatusUnauthorized)
 		return
 	}
+	// An SVID for other audiences too could be replayed here by any of them.
+	if len(svid.Audience) != 1 {
+		clog.WarnContext(ctx, "JWT-SVID for other audiences too", "audience", svid.Audience)
+		http.Error(w, "invalid JWT-SVID", http.StatusUnauthorized)
+		return
+	}
 	id := svid.ID.String()
 	localpart, ok := h.Users[id]
 	if !ok {
@@ -97,8 +115,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if r.URL.Path == UIAPath {
-		h.serveUIA(w, r, id, localpart)
+	if r.URL.Path == CrossSigningKeysPath {
+		h.serveCrossSigningKeys(w, r, id, localpart)
 		return
 	}
 
@@ -129,56 +147,116 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if request.DeviceID != "" {
 		login["device_id"] = request.DeviceID
 	}
-	body, err := json.Marshal(login)
-	if err != nil {
-		clog.ErrorContext(ctx, "encoding login request", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimSuffix(h.MatrixURL, "/")+"/_matrix/client/v3/login", bytes.NewReader(body))
-	if err != nil {
-		clog.ErrorContext(ctx, "building login request", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := h.Client.Do(req)
+	resp, err := h.call(r, http.MethodPost, "/_matrix/client/v3/login", "", login)
 	if err != nil {
 		clog.ErrorContext(ctx, "calling tuwunel", "error", err)
 		http.Error(w, "tuwunel unreachable", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
-
-	// tuwunel's response, an access token or a Matrix error, goes to the
-	// caller as is.
 	clog.InfoContext(ctx, "logged in", "spiffe_id", id, "localpart", localpart, "device_id", request.DeviceID, "status", resp.StatusCode)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, io.LimitReader(resp.Body, maxResponse)); err != nil {
-		clog.WarnContext(ctx, "relaying tuwunel's response", "error", err)
-	}
+	relay(w, r, resp)
 }
 
-// serveUIA answers a UIA for localpart, the user id maps to.
-func (h *Handler) serveUIA(w http.ResponseWriter, r *http.Request, id, localpart string) {
+// serveCrossSigningKeys replaces the cross-signing keys of localpart, the
+// user id maps to, with the CrossSigningKeys of the request.
+func (h *Handler) serveCrossSigningKeys(w http.ResponseWriter, r *http.Request, id, localpart string) {
 	ctx := r.Context()
+	var request CrossSigningKeys
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxCrossSigningKeys))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&request); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.AccessToken == "" || len(request.MasterKey) == 0 {
+		http.Error(w, "invalid request: access_token and master_key are required", http.StatusBadRequest)
+		return
+	}
+
+	// tuwunel replaces the keys of the access token's user, but takes the
+	// auth of the JWT's: without this, the caller could replace another
+	// user's keys with its token.
+	resp, err := h.call(r, http.MethodGet, "/_matrix/client/v3/account/whoami", request.AccessToken, nil)
+	if err != nil {
+		clog.ErrorContext(ctx, "calling tuwunel", "error", err)
+		http.Error(w, "tuwunel unreachable", http.StatusBadGateway)
+		return
+	}
+	var whoami struct {
+		UserID string `json:"user_id"`
+	}
+	err = json.NewDecoder(io.LimitReader(resp.Body, maxResponse)).Decode(&whoami)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || err != nil {
+		clog.WarnContext(ctx, "access token rejected", "spiffe_id", id, "status", resp.StatusCode)
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
+		return
+	}
+	if user, _, _ := strings.Cut(strings.TrimPrefix(whoami.UserID, "@"), ":"); user != localpart {
+		clog.WarnContext(ctx, "access token of another user", "spiffe_id", id, "localpart", localpart, "user_id", whoami.UserID)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	jwt, err := h.Signer.Sign(localpart, time.Now())
 	if err != nil {
 		clog.ErrorContext(ctx, "signing JWT", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	body, err := json.Marshal(UIA{Type: "org.matrix.login.jwt", Token: jwt})
+	upload := map[string]any{
+		"master_key": request.MasterKey,
+		"auth":       map[string]string{"type": "org.matrix.login.jwt", "token": jwt},
+	}
+	if len(request.SelfSigningKey) != 0 {
+		upload["self_signing_key"] = request.SelfSigningKey
+	}
+	if len(request.UserSigningKey) != 0 {
+		upload["user_signing_key"] = request.UserSigningKey
+	}
+	resp, err = h.call(r, http.MethodPost, "/_matrix/client/v3/keys/device_signing/upload", request.AccessToken, upload)
 	if err != nil {
-		clog.ErrorContext(ctx, "encoding UIA", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
+		clog.ErrorContext(ctx, "calling tuwunel", "error", err)
+		http.Error(w, "tuwunel unreachable", http.StatusBadGateway)
 		return
 	}
-	clog.InfoContext(ctx, "signed UIA", "spiffe_id", id, "localpart", localpart)
+	defer resp.Body.Close()
+	clog.InfoContext(ctx, "replaced cross-signing keys", "spiffe_id", id, "localpart", localpart, "status", resp.StatusCode)
+	relay(w, r, resp)
+}
+
+// call sends tuwunel a request at path, with token, if any, and body, if
+// not nil, as JSON.
+func (h *Handler) call(r *http.Request, method, path, token string, body any) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, strings.TrimSuffix(h.MatrixURL, "/")+path, reader)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return h.Client.Do(req)
+}
+
+// relay answers tuwunel's response, such as an access token or a Matrix
+// error, as is.
+func relay(w http.ResponseWriter, r *http.Request, resp *http.Response) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Write(body)
+	w.WriteHeader(resp.StatusCode)
+	if _, err := io.Copy(w, io.LimitReader(resp.Body, maxResponse)); err != nil {
+		clog.WarnContext(r.Context(), "relaying tuwunel's response", "error", err)
+	}
 }

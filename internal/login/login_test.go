@@ -43,6 +43,12 @@ func newAuthority(t *testing.T) *authority {
 
 func (a *authority) svid(t *testing.T, sub, aud string, exp time.Time) string {
 	t.Helper()
+	return a.svidFor(t, sub, jwt.Audience{aud}, exp)
+}
+
+// svidFor is svid for audiences.
+func (a *authority) svidFor(t *testing.T, sub string, aud jwt.Audience, exp time.Time) string {
+	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: a.key},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "kid"))
 	if err != nil {
@@ -50,7 +56,7 @@ func (a *authority) svid(t *testing.T, sub, aud string, exp time.Time) string {
 	}
 	token, err := jwt.Signed(signer).Claims(jwt.Claims{
 		Subject:  sub,
-		Audience: jwt.Audience{aud},
+		Audience: aud,
 		Expiry:   jwt.NewNumericDate(exp),
 	}).Serialize()
 	if err != nil {
@@ -59,16 +65,38 @@ func (a *authority) svid(t *testing.T, sub, aud string, exp time.Time) string {
 	return token
 }
 
-// fakeTuwunel checks JWT logins the way tuwunel is configured to, by the
-// file TuwunelConfig writes, and answers with the user's ID and the device,
-// "ASSIGNED" when the login names none.
-func fakeTuwunel(t *testing.T, signer *Signer) *httptest.Server {
+// fakeTuwunel checks JWTs the way tuwunel is configured to, by the file
+// TuwunelConfig writes. It answers logins with the user's ID, an access token
+// "token-" and the user's localpart, and the device, "ASSIGNED" when the
+// login names none; whoami for those access tokens; and uploads of
+// cross-signing keys with a JWT as auth, sending their requests to uploads.
+func fakeTuwunel(t *testing.T, signer *Signer, uploads chan<- map[string]any) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/_matrix/client/v3/login" {
-			http.NotFound(w, r)
-			return
+	verify := func(token string) jwt.Claims {
+		t.Helper()
+		parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.ES256})
+		if err != nil {
+			t.Fatalf("parsing JWT: %v", err)
 		}
+		var claims jwt.Claims
+		if err := parsed.Claims(signer.Public(), &claims); err != nil {
+			t.Fatalf("verifying JWT: %v", err)
+		}
+		if err := claims.Validate(jwt.Expected{Issuer: Issuer, AnyAudience: jwt.Audience{Audience}}); err != nil {
+			t.Fatalf("validating JWT: %v", err)
+		}
+		if claims.Expiry == nil || claims.NotBefore == nil {
+			t.Errorf("JWT lacks exp or nbf: %+v", claims)
+		}
+		return claims
+	}
+	user := func(r *http.Request) (string, bool) {
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		localpart, ok := strings.CutPrefix(token, "token-")
+		return "@" + localpart + ":example.org", ok
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /_matrix/client/v3/login", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Type     string `json:"type"`
 			Token    string `json:"token"`
@@ -83,26 +111,43 @@ func fakeTuwunel(t *testing.T, signer *Signer) *httptest.Server {
 		if body.DeviceID == "" {
 			body.DeviceID = "ASSIGNED"
 		}
-		token, err := jwt.ParseSigned(body.Token, []jose.SignatureAlgorithm{jose.ES256})
-		if err != nil {
-			t.Fatalf("parsing JWT: %v", err)
-		}
-		var claims jwt.Claims
-		if err := token.Claims(signer.Public(), &claims); err != nil {
-			t.Fatalf("verifying JWT: %v", err)
-		}
-		if err := claims.Validate(jwt.Expected{Issuer: Issuer, AnyAudience: jwt.Audience{Audience}}); err != nil {
-			t.Fatalf("validating JWT: %v", err)
-		}
-		if claims.Expiry == nil || claims.NotBefore == nil {
-			t.Errorf("JWT lacks exp or nbf: %+v", claims)
-		}
+		claims := verify(body.Token)
 		json.NewEncoder(w).Encode(map[string]string{
 			"user_id":      "@" + claims.Subject + ":example.org",
 			"access_token": "token-" + claims.Subject,
 			"device_id":    body.DeviceID,
 		})
-	}))
+	})
+	mux.HandleFunc("GET /_matrix/client/v3/account/whoami", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := user(r)
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"errcode": "M_UNKNOWN_TOKEN"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"user_id": user})
+	})
+	mux.HandleFunc("POST /_matrix/client/v3/keys/device_signing/upload", func(w http.ResponseWriter, r *http.Request) {
+		user, ok := user(r)
+		if !ok {
+			t.Errorf("upload with authorization %q", r.Header.Get("Authorization"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decoding upload request: %v", err)
+		}
+		auth, _ := body["auth"].(map[string]any)
+		if auth["type"] != "org.matrix.login.jwt" {
+			t.Errorf("upload with auth %v", auth)
+		}
+		token, _ := auth["token"].(string)
+		if claims := verify(token); "@"+claims.Subject+":example.org" != user {
+			t.Errorf("upload as %s with auth for %s", user, claims.Subject)
+		}
+		uploads <- body
+		json.NewEncoder(w).Encode(map[string]string{})
+	})
+	return httptest.NewServer(mux)
 }
 
 func TestHandler(t *testing.T) {
@@ -112,7 +157,7 @@ func TestHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	matrix := fakeTuwunel(t, signer)
+	matrix := fakeTuwunel(t, signer, nil)
 	defer matrix.Close()
 	h := &Handler{
 		Bundles:   ca.bundle,
@@ -180,6 +225,11 @@ func TestHandler(t *testing.T) {
 		name:   "other audience",
 		method: http.MethodPost,
 		auth:   "Bearer " + ca.svid(t, bot, "elsewhere", later),
+		status: http.StatusUnauthorized,
+	}, {
+		name:   "other audiences too",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svidFor(t, bot, jwt.Audience{testAudience, "elsewhere"}, later),
 		status: http.StatusUnauthorized,
 	}, {
 		name:   "expired",
@@ -257,57 +307,109 @@ func TestTuwunelConfig(t *testing.T) {
 	}
 }
 
-func TestUIA(t *testing.T) {
+func TestCrossSigningKeys(t *testing.T) {
 	ca := newAuthority(t)
 	signer, err := NewSigner()
 	if err != nil {
 		t.Fatal(err)
 	}
+	uploads := make(chan map[string]any, 1)
+	matrix := fakeTuwunel(t, signer, uploads)
+	defer matrix.Close()
 	h := &Handler{
-		Bundles:  ca.bundle,
-		Audience: testAudience,
-		Users:    map[string]string{bot: "bot"},
-		Signer:   signer,
+		Bundles:   ca.bundle,
+		Audience:  testAudience,
+		Users:     map[string]string{bot: "bot"},
+		Signer:    signer,
+		MatrixURL: matrix.URL,
+		Client:    matrix.Client(),
 	}
 	later := time.Now().Add(5 * time.Minute)
-	post := func(path, sub string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, path, nil)
-		req.Header.Set("Authorization", "Bearer "+ca.svid(t, sub, testAudience, later))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec
+	const keys = `"master_key": {"usage": ["master"]}, "self_signing_key": {"usage": ["self_signing"]}, "user_signing_key": {"usage": ["user_signing"]}`
+
+	for _, tc := range []struct {
+		name   string
+		sub    string
+		body   string
+		status int
+	}{{
+		name:   "own access token",
+		sub:    bot,
+		body:   `{"access_token": "token-bot", ` + keys + `}`,
+		status: http.StatusOK,
+	}, {
+		name:   "another user's access token",
+		sub:    bot,
+		body:   `{"access_token": "token-phil", ` + keys + `}`,
+		status: http.StatusForbidden,
+	}, {
+		name:   "invalid access token",
+		sub:    bot,
+		body:   `{"access_token": "stolen", ` + keys + `}`,
+		status: http.StatusUnauthorized,
+	}, {
+		name:   "no access token",
+		sub:    bot,
+		body:   `{` + keys + `}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "no master key",
+		sub:    bot,
+		body:   `{"access_token": "token-bot", "self_signing_key": {}}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "auth of its own",
+		sub:    bot,
+		body:   `{"access_token": "token-bot", "auth": {"type": "m.login.dummy"}, ` + keys + `}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "body too large",
+		sub:    bot,
+		body:   `{"access_token": "token-bot", "master_key": "` + strings.Repeat("A", maxCrossSigningKeys) + `"}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "unmapped SPIFFE ID",
+		sub:    "spiffe://example.org/stranger",
+		body:   `{"access_token": "token-stranger", ` + keys + `}`,
+		status: http.StatusForbidden,
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, CrossSigningKeysPath, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", "Bearer "+ca.svid(t, tc.sub, testAudience, later))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status %d, want %d: %s", rec.Code, tc.status, rec.Body)
+			}
+			if tc.status != http.StatusOK {
+				select {
+				case upload := <-uploads:
+					t.Errorf("uploaded %v", upload)
+				default:
+				}
+				return
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control %q, want no-store", got)
+			}
+			upload := <-uploads
+			for key, usage := range map[string]string{"master_key": "master", "self_signing_key": "self_signing", "user_signing_key": "user_signing"} {
+				got, _ := upload[key].(map[string]any)
+				if usages, _ := got["usage"].([]any); len(usages) != 1 || usages[0] != usage {
+					t.Errorf("uploaded %s %v", key, upload[key])
+				}
+			}
+			if strings.Contains(rec.Body.String(), "token") {
+				t.Errorf("answered %s", rec.Body)
+			}
+		})
 	}
 
-	rec := post(UIAPath, bot)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body)
-	}
-	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
-		t.Errorf("Cache-Control %q, want no-store", got)
-	}
-	var uia UIA
-	if err := json.Unmarshal(rec.Body.Bytes(), &uia); err != nil {
-		t.Fatal(err)
-	}
-	if uia.Type != "org.matrix.login.jwt" {
-		t.Errorf("type %q", uia.Type)
-	}
-	token, err := jwt.ParseSigned(uia.Token, []jose.SignatureAlgorithm{jose.ES256})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var claims jwt.Claims
-	if err := token.Claims(signer.Public(), &claims); err != nil {
-		t.Fatal(err)
-	}
-	if err := claims.Validate(jwt.Expected{Subject: "bot", Issuer: Issuer, AnyAudience: jwt.Audience{Audience}}); err != nil {
-		t.Errorf("claims %+v: %v", claims, err)
-	}
-
-	if rec := post(UIAPath, "spiffe://example.org/stranger"); rec.Code != http.StatusForbidden {
-		t.Errorf("UIA for an unmapped SPIFFE ID: status %d, want %d", rec.Code, http.StatusForbidden)
-	}
-	if rec := post("/other", bot); rec.Code != http.StatusNotFound {
+	req := httptest.NewRequest(http.MethodPost, "/other", nil)
+	req.Header.Set("Authorization", "Bearer "+ca.svid(t, bot, testAudience, later))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
 		t.Errorf("POST /other: status %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
