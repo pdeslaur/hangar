@@ -19,8 +19,9 @@ import (
 )
 
 type config struct {
-	// Addr is where it listens, behind an mTLS sidecar.
-	Addr string `env:"ADDR,default=:8080"`
+	// Addr is where it listens. It defaults to loopback, so that only the
+	// mTLS sidecar in its pod reaches it.
+	Addr string `env:"ADDR,default=127.0.0.1:8080"`
 	// Audience is the aud a JWT-SVID needs.
 	Audience string `env:"AUDIENCE,required"`
 	// Users maps SPIFFE IDs to Matrix localparts:
