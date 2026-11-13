@@ -48,16 +48,39 @@ func TestSendRefuses(t *testing.T) {
 	ready := make(chan struct{})
 	close(ready)
 	for _, tc := range []struct {
-		name   string
-		method string
-		body   string
-		ready  chan struct{}
-		status int
+		name    string
+		method  string
+		headers map[string]string
+		body    string
+		ready   chan struct{}
+		status  int
 	}{{
 		name:   "GET",
 		method: http.MethodGet,
 		ready:  ready,
 		status: http.StatusMethodNotAllowed,
+	}, {
+		name:    "cross-origin browser",
+		method:  http.MethodPost,
+		headers: map[string]string{"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"},
+		body:    `{"room": "!a:example.org", "body": "hi"}`,
+		ready:   ready,
+		status:  http.StatusForbidden,
+	}, {
+		// A page on a domain rebound to loopback is same-origin.
+		name:    "same-origin browser",
+		method:  http.MethodPost,
+		headers: map[string]string{"Origin": "http://rebound.example:8090"},
+		body:    `{"room": "!a:example.org", "body": "hi"}`,
+		ready:   ready,
+		status:  http.StatusForbidden,
+	}, {
+		name:    "browser without Origin",
+		method:  http.MethodPost,
+		headers: map[string]string{"Sec-Fetch-Site": "same-origin"},
+		body:    `{"room": "!a:example.org", "body": "hi"}`,
+		ready:   ready,
+		status:  http.StatusForbidden,
 	}, {
 		name:   "not synced",
 		method: http.MethodPost,
@@ -98,7 +121,11 @@ func TestSendRefuses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &Relay{ready: tc.ready}
 			rec := httptest.NewRecorder()
-			r.ServeHTTP(rec, httptest.NewRequest(tc.method, "/", strings.NewReader(tc.body)))
+			req := httptest.NewRequest(tc.method, "/", strings.NewReader(tc.body))
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+			r.ServeHTTP(rec, req)
 			if rec.Code != tc.status {
 				t.Errorf("status %d, want %d: %s", rec.Code, tc.status, rec.Body)
 			}
