@@ -256,3 +256,58 @@ func TestTuwunelConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestUIA(t *testing.T) {
+	ca := newAuthority(t)
+	signer, err := NewSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{
+		Bundles:  ca.bundle,
+		Audience: testAudience,
+		Users:    map[string]string{bot: "bot"},
+		Signer:   signer,
+	}
+	later := time.Now().Add(5 * time.Minute)
+	post := func(path, sub string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Authorization", "Bearer "+ca.svid(t, sub, testAudience, later))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := post(UIAPath, bot)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control %q, want no-store", got)
+	}
+	var uia UIA
+	if err := json.Unmarshal(rec.Body.Bytes(), &uia); err != nil {
+		t.Fatal(err)
+	}
+	if uia.Type != "org.matrix.login.jwt" {
+		t.Errorf("type %q", uia.Type)
+	}
+	token, err := jwt.ParseSigned(uia.Token, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims jwt.Claims
+	if err := token.Claims(signer.Public(), &claims); err != nil {
+		t.Fatal(err)
+	}
+	if err := claims.Validate(jwt.Expected{Subject: "bot", Issuer: Issuer, AnyAudience: jwt.Audience{Audience}}); err != nil {
+		t.Errorf("claims %+v: %v", claims, err)
+	}
+
+	if rec := post(UIAPath, "spiffe://example.org/stranger"); rec.Code != http.StatusForbidden {
+		t.Errorf("UIA for an unmapped SPIFFE ID: status %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if rec := post("/other", bot); rec.Code != http.StatusNotFound {
+		t.Errorf("POST /other: status %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}

@@ -35,9 +35,21 @@ type Request struct {
 // maxResponse bounds how much of tuwunel's response it relays.
 const maxResponse = 64 << 10
 
-// Handler answers POST requests carrying a JWT-SVID as a bearer token, and
-// optionally a Request, with the response of tuwunel's login endpoint for the
-// Matrix user the SVID's SPIFFE ID maps to.
+// UIAPath is the path answering user-interactive auth for the caller's user.
+const UIAPath = "/uia"
+
+// UIA is the auth of a request needing user-interactive auth, such as
+// replacing a user's cross-signing keys: tuwunel takes a JWT it would log
+// the user in with.
+type UIA struct {
+	Type  string `json:"type"`
+	Token string `json:"token"`
+}
+
+// Handler answers POST requests carrying a JWT-SVID as a bearer token, for
+// the Matrix user the SVID's SPIFFE ID maps to. At /, with optionally a
+// Request, it answers the response of tuwunel's login endpoint; at UIAPath,
+// a UIA. Either logs the user in: a UIA's JWT lasts as long as a login's.
 type Handler struct {
 	// Bundles verifies JWT-SVIDs; the Workload API's keeps up with the
 	// SPIRE server's key rotation.
@@ -62,6 +74,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.URL.Path != "/" && r.URL.Path != UIAPath {
+		http.NotFound(w, r)
+		return
+	}
 
 	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
@@ -79,6 +95,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		clog.WarnContext(ctx, "SPIFFE ID maps to no Matrix user", "spiffe_id", id)
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if r.URL.Path == UIAPath {
+		h.serveUIA(w, r, id, localpart)
 		return
 	}
 
@@ -140,4 +160,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, io.LimitReader(resp.Body, maxResponse)); err != nil {
 		clog.WarnContext(ctx, "relaying tuwunel's response", "error", err)
 	}
+}
+
+// serveUIA answers a UIA for localpart, the user id maps to.
+func (h *Handler) serveUIA(w http.ResponseWriter, r *http.Request, id, localpart string) {
+	ctx := r.Context()
+	jwt, err := h.Signer.Sign(localpart, time.Now())
+	if err != nil {
+		clog.ErrorContext(ctx, "signing JWT", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	body, err := json.Marshal(UIA{Type: "org.matrix.login.jwt", Token: jwt})
+	if err != nil {
+		clog.ErrorContext(ctx, "encoding UIA", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	clog.InfoContext(ctx, "signed UIA", "spiffe_id", id, "localpart", localpart)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(body)
 }

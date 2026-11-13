@@ -1,6 +1,10 @@
 package login
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -250,5 +254,94 @@ func TestTuwunelReload(t *testing.T) {
 	}
 	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later), ""); status == http.StatusOK {
 		t.Errorf("logging in with the key before reloading: %d %v, want an error", status, body)
+	}
+}
+
+// uploadMasterKey uploads a master key for @bot:example.org with an access
+// token, and auth unless it's nil, returning tuwunel's status and response.
+func uploadMasterKey(t *testing.T, url, token string, auth any) (int, map[string]any) {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := base64.RawStdEncoding.EncodeToString(pub)
+	request := map[string]any{
+		"master_key": map[string]any{
+			"user_id": "@bot:example.org",
+			"usage":   []string{"master"},
+			"keys":    map[string]string{"ed25519:" + key: key},
+		},
+	}
+	if auth != nil {
+		request["auth"] = auth
+	}
+	b, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url+"/_matrix/client/v3/keys/device_signing/upload", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, body
+}
+
+// TestTuwunelUIA checks that tuwunel takes a UIA for what needs
+// user-interactive auth, such as replacing a user's cross-signing keys.
+func TestTuwunelUIA(t *testing.T) {
+	signer, err := NewSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := startTuwunel(t, signer).url
+	ca := newAuthority(t)
+	h := &Handler{
+		Bundles:   ca.bundle,
+		Audience:  testAudience,
+		Users:     map[string]string{bot: "bot"},
+		Signer:    signer,
+		MatrixURL: url,
+		Client:    http.DefaultClient,
+	}
+	later := time.Now().Add(5 * time.Minute)
+	status, session := login(t, h, ca.svid(t, bot, testAudience, later), "")
+	if status != http.StatusOK {
+		t.Fatalf("logging in as bot: %d %v", status, session)
+	}
+	token := session["access_token"].(string)
+
+	// The first keys need no user-interactive auth; replacing them does.
+	if status, body := uploadMasterKey(t, url, token, nil); status != http.StatusOK {
+		t.Fatalf("uploading the first master key: %d %v", status, body)
+	}
+	if status, body := uploadMasterKey(t, url, token, nil); status != http.StatusUnauthorized {
+		t.Fatalf("replacing the master key without auth: %d %v, want %d", status, body, http.StatusUnauthorized)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, UIAPath, nil)
+	req.Header.Set("Authorization", "Bearer "+ca.svid(t, bot, testAudience, later))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("UIA: %d %s", rec.Code, rec.Body)
+	}
+	var uia UIA
+	if err := json.Unmarshal(rec.Body.Bytes(), &uia); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := uploadMasterKey(t, url, token, uia); status != http.StatusOK {
+		t.Errorf("replacing the master key with a UIA: %d %v", status, body)
 	}
 }
