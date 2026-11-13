@@ -333,11 +333,14 @@ func (u *user) createRoom(t *testing.T, invitee id.UserID) id.RoomID {
 	return resp.RoomID
 }
 
-// membership is who's membership in room, as u's sync shows it.
+// membership is who's membership in room, as the homeserver has it, rather
+// than u's state store: CreateRoom records its invitees as invited once the
+// homeserver answers, which may be after u's sync recorded their joins.
 func (u *user) membership(t *testing.T, room id.RoomID, who id.UserID) event.Membership {
-	m, err := u.StateStore.GetMember(t.Context(), room, who)
+	var m event.MemberEventContent
+	_, err := u.MakeRequest(t.Context(), http.MethodGet, u.BuildClientURL("v3", "rooms", room, "state", event.StateMember.Type, who.String()), nil, &m)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("getting %s's membership in %s: %v", who, room, err)
 	}
 	return m.Membership
 }
