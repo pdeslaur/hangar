@@ -79,11 +79,11 @@ func startTuwunel(t *testing.T, signer *Signer) tuwunel {
 	}
 }
 
-// login asks h for a session with svid, returning tuwunel's status and
-// response.
-func login(t *testing.T, h http.Handler, svid string) (int, map[string]any) {
+// login asks h for a session with svid and request, its body, returning
+// tuwunel's status and response.
+func login(t *testing.T, h http.Handler, svid, request string) (int, map[string]any) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(request))
 	req.Header.Set("Authorization", "Bearer "+svid)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -127,14 +127,16 @@ func TestTuwunel(t *testing.T) {
 		MatrixURL: url,
 		Client:    http.DefaultClient,
 	}
+	const device = "RELAY"
+	onDevice := `{"device_id": "` + device + `"}`
 	later := time.Now().Add(5 * time.Minute)
 
-	status, first := login(t, h, ca.svid(t, bot, testAudience, later))
+	status, first := login(t, h, ca.svid(t, bot, testAudience, later), onDevice)
 	if status != http.StatusOK {
 		t.Fatalf("logging in as bot: %d %v", status, first)
 	}
-	if first["user_id"] != "@bot:example.org" || first["device_id"] != DeviceID {
-		t.Errorf("session %v, want @bot:example.org on %s", first, DeviceID)
+	if first["user_id"] != "@bot:example.org" || first["device_id"] != device {
+		t.Errorf("session %v, want @bot:example.org on %s", first, device)
 	}
 	if _, ok := first["expires_in_ms"]; !ok {
 		t.Errorf("session %v doesn't expire", first)
@@ -151,8 +153,8 @@ func TestTuwunel(t *testing.T) {
 	// Logging in again on the same device adds an access token to it,
 	// unlike the spec says, leaving the first valid until the caller logs
 	// it out.
-	status, second := login(t, h, ca.svid(t, bot, testAudience, later))
-	if status != http.StatusOK || second["device_id"] != DeviceID {
+	status, second := login(t, h, ca.svid(t, bot, testAudience, later), onDevice)
+	if status != http.StatusOK || second["device_id"] != device {
 		t.Fatalf("logging in as bot again: %d %v", status, second)
 	}
 	if got := call(t, http.MethodGet, whoami, second["access_token"].(string)); got != http.StatusOK {
@@ -171,7 +173,7 @@ func TestTuwunel(t *testing.T) {
 			t.Errorf("whoami with access token %d after logging out: %d, want %d", i+1, got, http.StatusUnauthorized)
 		}
 	}
-	status, third := login(t, h, ca.svid(t, bot, testAudience, later))
+	status, third := login(t, h, ca.svid(t, bot, testAudience, later), onDevice)
 	if status != http.StatusOK {
 		t.Fatalf("logging in as bot after logging out: %d %v", status, third)
 	}
@@ -179,8 +181,21 @@ func TestTuwunel(t *testing.T) {
 		t.Errorf("whoami after logging in again: %d", got)
 	}
 
+	// Without a device, tuwunel creates one for each login.
+	devices := map[any]bool{}
+	for range 2 {
+		status, session := login(t, h, ca.svid(t, bot, testAudience, later), "")
+		if status != http.StatusOK {
+			t.Fatalf("logging in as bot without a device: %d %v", status, session)
+		}
+		devices[session["device_id"]] = true
+	}
+	if len(devices) != 2 || devices[device] {
+		t.Errorf("logins without a device on %v, want two other devices", devices)
+	}
+
 	// tuwunel creates no user.
-	status, body := login(t, h, ca.svid(t, ghost, testAudience, later))
+	status, body := login(t, h, ca.svid(t, ghost, testAudience, later), "")
 	if status == http.StatusOK || body["errcode"] != "M_NOT_FOUND" {
 		t.Errorf("logging in as ghost: %d %v, want M_NOT_FOUND", status, body)
 	}
@@ -206,7 +221,7 @@ func TestTuwunelReload(t *testing.T) {
 		}
 	}
 	later := time.Now().Add(5 * time.Minute)
-	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later)); status != http.StatusOK {
+	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later), ""); status != http.StatusOK {
 		t.Fatalf("logging in before reloading: %d %v", status, body)
 	}
 
@@ -224,7 +239,7 @@ func TestTuwunelReload(t *testing.T) {
 	// tuwunel reloads in the background: wait for the key to be trusted.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		status, body := login(t, handler(after), ca.svid(t, bot, testAudience, later))
+		status, body := login(t, handler(after), ca.svid(t, bot, testAudience, later), "")
 		if status == http.StatusOK {
 			break
 		}
@@ -233,7 +248,7 @@ func TestTuwunelReload(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later)); status == http.StatusOK {
+	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later), ""); status == http.StatusOK {
 		t.Errorf("logging in with the key before reloading: %d %v, want an error", status, body)
 	}
 }
