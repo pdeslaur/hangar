@@ -15,7 +15,7 @@ This works around two limits of tuwunel's JWT login: it takes a single static ke
 
 tuwunel accepts any `sub` its key signs, so the key can log in as any existing user, not only the ones in `USERS`. That's why it lives in tuwunel's pod and nowhere else: whoever compromises it could equally compromise tuwunel, which holds every access token. tuwunel only signs in existing users (`register_user = false`).
 
-A JWT-SVID is a bearer token: until it expires, whoever holds it can exchange it for an access token lasting much longer, and, since every login uses the same device, end the session of the bot it belongs to. So `AUDIENCE` must be unique to this service, never accepted by another, so that no other service receiving an SVID can replay it here. Callers should fetch SVIDs with short lifetimes, just before exchanging them, and never log them.
+A JWT-SVID is a bearer token: until it expires, whoever holds it can exchange it for an access token lasting much longer. So `AUDIENCE` must be unique to this service, never accepted by another, so that no other service receiving an SVID can replay it here. Callers should fetch SVIDs with short lifetimes, just before exchanging them, and never log them.
 
 ## tuwunel config
 
@@ -43,6 +43,10 @@ A new key is generated each time the process starts, so tuwunel must start after
 
 With `expire_access_token`, the access tokens it hands out last tuwunel's `access_token_ttl`, a week by default, without a refresh token: a bot logs in again when its token expires.
 
+## Rotating access tokens
+
+Every login is on the device `TUWUNELSVIDSTS`. Unlike the Matrix spec says, tuwunel doesn't end a device's access tokens when it logs in on it again: it adds one, and the earlier ones last until they expire. Logging out ends them all, since tuwunel deletes the device. So a bot rotates its token by logging out with the old one, then exchanging a fresh SVID: that also ends any token someone else got for it, like by replaying an SVID. Deleting the device drops its end-to-end encryption keys, so this suits bots that don't use encrypted rooms.
+
 ## Configuration
 
 | Variable | Default | |
@@ -64,6 +68,14 @@ curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/
 
 ```json
 {"user_id": "@bot:example.org", "access_token": "...", "device_id": "TUWUNELSVIDSTS", "expires_in_ms": 604800000}
+```
+
+## Testing
+
+`go test ./...` runs without tuwunel. To also check the config file and logins against a real tuwunel, run with docker and an image:
+
+```sh
+TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
 ```
 
 ## Image
