@@ -8,7 +8,7 @@ Built on [mautrix-go](https://github.com/mautrix/go), with its olm in Go, so wit
 
 - **Login.** It fetches a JWT-SVID for `STS_AUDIENCE` from the Workload API and exchanges it at `STS_URL` for an access token, on the device its store holds; the first time, on a device the homeserver creates. Once four fifths of the token's lifetime has passed, it logs in again on the same device, which keeps its keys, retrying every minute while that fails.
 - **Encryption.** Its crypto store, in `STORE_DIR`, holds the device's keys and the rooms' keys. Their secrets are encrypted with a key generated the first time, `pickle.key`, beside the store, as mautrix's bridges do: it protects a copy of the database alone, not of the whole directory.
-- **Cross-signing.** The first time, it publishes cross-signing keys for its user, keeping them in its store, and signs its device with them, so that clients show its messages as its user's rather than an unverified device's. The homeserver must take a user's first cross-signing keys without user-interactive auth, as tuwunel does: the user has no password. A user whose cross-signing keys the store doesn't hold keeps them, its device unsigned.
+- **Cross-signing.** The first time, it generates cross-signing keys for its user, keeping them in its store. It publishes them whenever its user has other keys, or none, and signs its device with them, so that clients show its messages as its user's rather than an unverified device's. Replacing a user's keys, such as a client's from before the relay, needs user-interactive auth, which the user, without a password, completes through tuwunel-svid-sts's [user-interactive auth](https://github.com/pdeslaur/tuwunel-svid-sts#user-interactive-auth): clients that saw the earlier keys show that its user's identity changed.
 - **Rooms.** It joins the rooms a user in `ALLOWED_USERS` invites it to, and declines other invites.
 - **Sending.** It answers once it has synced. Before sending to a room it isn't sure is encrypted, it asks the homeserver: it never sends in the clear to an encrypted room.
 - **Receiving.** It forwards the messages users in `ALLOWED_USERS` send, decrypted, to `INBOUND_URL`, if set. It skips messages from before it started, such as commands sent while it was down.
@@ -16,7 +16,7 @@ Built on [mautrix-go](https://github.com/mautrix/go), with its olm in Go, so wit
 ## Trust
 
 - Anything in its pod can send as its user: it listens on loopback, unauthenticated.
-- `STORE_DIR` holds keys that read the rooms it's in, and the key that encrypts them: keep it in a volume only its pod reads.
+- `STORE_DIR` holds keys that read the rooms it's in, its user's cross-signing keys, and the key that encrypts them: keep it in a volume only its pod reads. Losing it, the relay makes its user a new identity the next time it starts.
 - `INBOUND_URL` receives messages decrypted: keep it in its pod too.
 - The device's tokens end only when they expire: logging out would delete the device, and its keys. See tuwunel-svid-sts's [devices and rotating access tokens](https://github.com/pdeslaur/tuwunel-svid-sts#devices-and-rotating-access-tokens).
 
@@ -45,7 +45,7 @@ A message it forwards to `INBOUND_URL`:
 | Variable | Default | |
 |---|---|---|
 | `HOMESERVER_URL` | | The homeserver's client API. Required. |
-| `STS_URL` | | tuwunel-svid-sts's URL, like `http://matrix:8080/` through the pod's mTLS client. Required. |
+| `STS_URL` | | tuwunel-svid-sts's URL, like `http://matrix:8080/` through the pod's mTLS client; it fetches user-interactive auth at `uia` under it. Required. |
 | `STS_AUDIENCE` | | The audience tuwunel-svid-sts requires of JWT-SVIDs. Required. |
 | `ALLOWED_USERS` | | The users whose invites it accepts and whose messages it forwards: `@phil:example.org,...`. Required. |
 | `INBOUND_URL` | | Where it forwards messages; unset, it forwards none. |
@@ -63,7 +63,7 @@ mautrix needs the `goolm` build tag for its olm in Go:
 go test -tags goolm ./...
 ```
 
-To also test against a real tuwunel, run with docker and an image: it checks logins, renewals, restarts, invites, cross-signing, and messages both ways in encrypted rooms.
+To also test against a real tuwunel, run with docker and an image: it checks logins, renewals, restarts, invites, cross-signing, replacing earlier cross-signing keys, and messages both ways in encrypted rooms.
 
 ```sh
 TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test -tags goolm ./...

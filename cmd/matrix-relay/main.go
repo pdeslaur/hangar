@@ -72,6 +72,7 @@ func run(ctx context.Context, cfg *config) error {
 		HomeserverURL: cfg.HomeserverURL,
 		StoreDir:      cfg.StoreDir,
 		Login:         login.Login,
+		UIA:           login.UIA,
 		Allowed:       cfg.AllowedUsers,
 		InboundURL:    cfg.InboundURL,
 		HTTP:          &http.Client{Timeout: 10 * time.Second},

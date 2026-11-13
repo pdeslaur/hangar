@@ -142,3 +142,63 @@ func TestLogin(t *testing.T) {
 		})
 	}
 }
+
+func TestUIA(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		url    string
+		answer string
+		status int
+		want   UIA
+		err    string
+	}{{
+		name:   "UIA",
+		answer: `{"type": "org.matrix.login.jwt", "token": "jwt"}`,
+		want:   UIA{Type: "org.matrix.login.jwt", Token: "jwt"},
+	}, {
+		name:   "URL with a slash",
+		url:    "/",
+		answer: `{"type": "org.matrix.login.jwt", "token": "jwt"}`,
+		want:   UIA{Type: "org.matrix.login.jwt", Token: "jwt"},
+	}, {
+		name:   "refused",
+		answer: "forbidden",
+		status: http.StatusForbidden,
+		err:    "403 Forbidden: forbidden",
+	}, {
+		name:   "incomplete",
+		answer: `{"type": "org.matrix.login.jwt"}`,
+		err:    "incomplete UIA",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/uia" {
+					t.Errorf("%s %s, want POST /uia", r.Method, r.URL.Path)
+				}
+				if _, err := jwtsvid.ParseInsecure(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), []string{audience}); err != nil {
+					t.Errorf("JWT-SVID for the audience %s: %v", audience, err)
+				}
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+				}
+				w.Write([]byte(tc.answer))
+			}))
+			defer sts.Close()
+			c := &Client{URL: sts.URL + tc.url, Audience: audience, SVIDs: svids{}, HTTP: sts.Client()}
+
+			got, err := c.UIA(t.Context())
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("err = %v, want %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}

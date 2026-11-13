@@ -42,6 +42,9 @@ type Config struct {
 	// Login logs in on a device, or on one the homeserver creates when it's
 	// empty.
 	Login func(ctx context.Context, device id.DeviceID) (sts.Session, error)
+	// UIA completes the user-interactive auth replacing the user's
+	// cross-signing keys needs.
+	UIA func(ctx context.Context) (sts.UIA, error)
 	// Allowed are the users whose invites it accepts, declining others',
 	// and whose messages it forwards.
 	Allowed []id.UserID
@@ -200,9 +203,11 @@ func pickleKey(path string) ([]byte, error) {
 	return key, f.Close()
 }
 
-// crossSign publishes cross-signing keys the first time, keeping their
-// seeds in the store, and signs the device with them. A user whose keys
-// the store doesn't hold keeps them, its device unsigned.
+// crossSign makes the user's cross-signing keys the store's, and signs the
+// device with them. The first time, it generates them, keeping their seeds
+// in the store. It publishes them when the user has none, or others, such
+// as a client's from before the relay, which it replaces: the homeserver
+// needs user-interactive auth for that, which it completes with a UIA.
 func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) error {
 	mach := r.crypto.Machine()
 	resp, err := r.cli.QueryKeys(ctx, &mautrix.ReqQueryKeys{
@@ -221,10 +226,6 @@ func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) err
 		return err
 	}
 	if stored == "" {
-		if published != "" {
-			clog.WarnContext(ctx, "the user has cross-signing keys the store doesn't hold: its device stays unsigned", "master_key", published)
-			return nil
-		}
 		keys, err := mach.GenerateCrossSigningKeys()
 		if err != nil {
 			return err
@@ -248,19 +249,26 @@ func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) err
 		return err
 	}
 	ours := mach.CrossSigningKeys.MasterKey.PublicKey()
-	switch published {
-	case "":
-		// The homeserver takes a user's first cross-signing keys without
-		// user-interactive auth, which a user without a password couldn't
-		// complete.
-		if err := mach.PublishCrossSigningKeys(ctx, mach.CrossSigningKeys, func(*mautrix.RespUserInteractive) any { return nil }); err != nil {
-			return fmt.Errorf("publishing cross-signing keys: %w", err)
+	if published != ours {
+		// The homeserver takes a user's first keys without user-interactive
+		// auth, and asks for it to replace them.
+		var uiaErr error
+		uia := func(*mautrix.RespUserInteractive) any {
+			auth, err := r.cfg.UIA(ctx)
+			if err != nil {
+				uiaErr = fmt.Errorf("fetching a UIA: %w", err)
+				return nil
+			}
+			return auth
 		}
-		clog.InfoContext(ctx, "published cross-signing keys", "master_key", ours)
-	case ours:
-	default:
-		clog.WarnContext(ctx, "the user has other cross-signing keys than the store's: its device stays unsigned", "master_key", published)
-		return nil
+		if err := mach.PublishCrossSigningKeys(ctx, mach.CrossSigningKeys, uia); err != nil {
+			return fmt.Errorf("publishing cross-signing keys: %w", errors.Join(uiaErr, err))
+		}
+		if published == "" {
+			clog.InfoContext(ctx, "published cross-signing keys", "master_key", ours)
+		} else {
+			clog.WarnContext(ctx, "replaced the user's cross-signing keys with the store's", "master_key", ours, "replaced_master_key", published)
+		}
 	}
 	return mach.SignOwnDevice(ctx, mach.OwnIdentity())
 }

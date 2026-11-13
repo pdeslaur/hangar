@@ -100,19 +100,33 @@ func startTuwunel(t *testing.T, ttl time.Duration) string {
 	return url
 }
 
+// botJWT signs a JWT logging bot in, like tuwunel-svid-sts's.
+func botJWT() (string, error) {
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: []byte(jwtKey)}, nil)
+	if err != nil {
+		return "", err
+	}
+	return jwt.Signed(signer).Claims(jwt.Claims{
+		Subject: "bot",
+		Expiry:  jwt.NewNumericDate(time.Now().Add(time.Minute)),
+	}).Serialize()
+}
+
+// stsUIA answers a UIA for bot like tuwunel-svid-sts does.
+func stsUIA(context.Context) (sts.UIA, error) {
+	token, err := botJWT()
+	if err != nil {
+		return sts.UIA{}, err
+	}
+	return sts.UIA{Type: "org.matrix.login.jwt", Token: token}, nil
+}
+
 // stsLogin logs bot in like tuwunel-svid-sts does, with a JWT, counting its
 // logins.
 func stsLogin(t *testing.T, url string, logins *atomic.Int32) func(context.Context, id.DeviceID) (sts.Session, error) {
 	return func(ctx context.Context, device id.DeviceID) (sts.Session, error) {
 		logins.Add(1)
-		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.HS256, Key: []byte(jwtKey)}, nil)
-		if err != nil {
-			return sts.Session{}, err
-		}
-		token, err := jwt.Signed(signer).Claims(jwt.Claims{
-			Subject: "bot",
-			Expiry:  jwt.NewNumericDate(time.Now().Add(time.Minute)),
-		}).Serialize()
+		token, err := botJWT()
 		if err != nil {
 			return sts.Session{}, err
 		}
@@ -164,6 +178,7 @@ func startRelay(t *testing.T, url, dir string, logins *atomic.Int32, in *inbound
 		HomeserverURL: url,
 		StoreDir:      dir,
 		Login:         stsLogin(t, url, logins),
+		UIA:           stsUIA,
 		Allowed:       []id.UserID{"@phil:example.org"},
 		HTTP:          http.DefaultClient,
 		Log:           zerolog.Nop(),
@@ -359,19 +374,19 @@ func TestRelay(t *testing.T) {
 		t.Fatal("the relay forwarded nothing")
 	}
 
-	// Its device is signed by its self-signing key.
-	resp, err := phil.QueryKeys(t.Context(), &mautrix.ReqQueryKeys{DeviceKeys: map[id.UserID]mautrix.DeviceIDList{bot: {}}})
+	// Phil's client finds its device cross-signed by its user, as clients
+	// need to show its messages as its user's: its master key signs its
+	// self-signing key, which signs its device.
+	mach := phil.Crypto.(*cryptohelper.CryptoHelper).Machine()
+	if _, err := mach.FetchKeys(t.Context(), []id.UserID{bot}, true); err != nil {
+		t.Fatal(err)
+	}
+	device, err := mach.GetOrFetchDevice(t.Context(), bot, r.DeviceID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	selfSigningKeys := resp.SelfSigningKeys[bot]
-	selfSigning := selfSigningKeys.FirstKey()
-	if selfSigning == "" {
-		t.Fatalf("%s has no self-signing key", bot)
-	}
-	device := resp.DeviceKeys[bot][r.DeviceID()]
-	if _, ok := device.Signatures[bot][id.NewKeyID(id.KeyAlgorithmEd25519, selfSigning.String())]; !ok {
-		t.Errorf("device %s isn't signed by %s: %v", r.DeviceID(), selfSigning, device.Signatures)
+	if trust, err := mach.ResolveTrustContext(t.Context(), device); err != nil || trust != id.TrustStateCrossSignedTOFU {
+		t.Errorf("phil trusts device %s as %s (%v), want %s", r.DeviceID(), trust, err, id.TrustStateCrossSignedTOFU)
 	}
 	if n := logins.Load(); n != 1 {
 		t.Errorf("logged in %d times, want 1", n)
@@ -413,6 +428,57 @@ func TestRelayRestart(t *testing.T) {
 	evt := phil.receive(t, second.UserID())
 	if got := evt.Content.AsMessage().Body; got != "after restarting" || !evt.Mautrix.WasEncrypted {
 		t.Errorf("phil received %q, encrypted %v", got, evt.Mautrix.WasEncrypted)
+	}
+}
+
+// TestRelayReplacesKeys checks that a relay replaces cross-signing keys its
+// store doesn't hold, such as a client's from before it, and signs its device
+// with its own.
+func TestRelayReplacesKeys(t *testing.T) {
+	url := startTuwunel(t, time.Hour)
+	dir := t.TempDir()
+	phil := login(t, url, "phil", dir)
+
+	// bot's keys from a client, which phil has seen.
+	client := login(t, url, "bot", dir).Crypto.(*cryptohelper.CryptoHelper).Machine()
+	keys, err := client.GenerateCrossSigningKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.PublishCrossSigningKeys(t.Context(), keys, nil); err != nil {
+		t.Fatalf("publishing the client's keys: %v", err)
+	}
+	mach := phil.Crypto.(*cryptohelper.CryptoHelper).Machine()
+	if _, err := mach.FetchKeys(t.Context(), []id.UserID{"@bot:example.org"}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	var logins atomic.Int32
+	r := startRelay(t, url, filepath.Join(dir, "relay"), &logins, nil)
+	ours := r.crypto.Machine().CrossSigningKeys.MasterKey.PublicKey()
+	if ours == keys.MasterKey.PublicKey() {
+		t.Fatal("the relay holds the client's keys")
+	}
+	resp, err := phil.QueryKeys(t.Context(), &mautrix.ReqQueryKeys{DeviceKeys: map[id.UserID]mautrix.DeviceIDList{r.UserID(): {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	masterKeys := resp.MasterKeys[r.UserID()]
+	if got := masterKeys.FirstKey(); got != ours {
+		t.Errorf("published master key %s, want the relay's %s", got, ours)
+	}
+
+	// Phil's client finds its device cross-signed by its user's identity,
+	// which changed since phil saw it.
+	if _, err := mach.FetchKeys(t.Context(), []id.UserID{r.UserID()}, true); err != nil {
+		t.Fatal(err)
+	}
+	device, err := mach.GetOrFetchDevice(t.Context(), r.UserID(), r.DeviceID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trust, err := mach.ResolveTrustContext(t.Context(), device); err != nil || trust != id.TrustStateCrossSignedUntrusted {
+		t.Errorf("phil trusts device %s as %s (%v), want %s", r.DeviceID(), trust, err, id.TrustStateCrossSignedUntrusted)
 	}
 }
 
