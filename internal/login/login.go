@@ -15,8 +15,9 @@ import (
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 )
 
-// DeviceID is the Matrix device every login uses, so that a login replaces
-// the session of the one before it rather than adding a device each time.
+// DeviceID is the Matrix device every login uses, so that logins don't add a
+// device each time, and logging out ends every access token it handed out
+// for a user.
 const DeviceID = "TUWUNELSVIDSTS"
 
 // maxResponse bounds how much of tuwunel's response it relays.
