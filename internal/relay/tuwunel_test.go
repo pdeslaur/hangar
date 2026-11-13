@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,13 +114,40 @@ func botJWT() (string, error) {
 	}).Serialize()
 }
 
-// stsUIA answers a UIA for bot like tuwunel-svid-sts does.
-func stsUIA(context.Context) (sts.UIA, error) {
-	token, err := botJWT()
-	if err != nil {
-		return sts.UIA{}, err
+// stsReplaceCrossSigningKeys replaces bot's cross-signing keys like
+// tuwunel-svid-sts does, with a JWT as auth.
+func stsReplaceCrossSigningKeys(url string) func(context.Context, sts.CrossSigningKeys) error {
+	return func(ctx context.Context, keys sts.CrossSigningKeys) error {
+		token, err := botJWT()
+		if err != nil {
+			return err
+		}
+		body, err := json.Marshal(map[string]any{
+			"master_key":       keys.MasterKey,
+			"self_signing_key": keys.SelfSigningKey,
+			"user_signing_key": keys.UserSigningKey,
+			"auth":             map[string]string{"type": "org.matrix.login.jwt", "token": token},
+		})
+		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/_matrix/client/v3/keys/device_signing/upload", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+keys.AccessToken)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			return fmt.Errorf("uploading cross-signing keys: %s: %s", resp.Status, b)
+		}
+		return nil
 	}
-	return sts.UIA{Type: "org.matrix.login.jwt", Token: token}, nil
 }
 
 // stsLogin logs bot in like tuwunel-svid-sts does, with a JWT, counting its
@@ -175,13 +204,13 @@ func startRelay(t *testing.T, url, dir string, logins *atomic.Int32, in *inbound
 	t.Helper()
 	ctx := t.Context()
 	cfg := Config{
-		HomeserverURL: url,
-		StoreDir:      dir,
-		Login:         stsLogin(t, url, logins),
-		UIA:           stsUIA,
-		Allowed:       []id.UserID{"@phil:example.org"},
-		HTTP:          http.DefaultClient,
-		Log:           zerolog.Nop(),
+		HomeserverURL:           url,
+		StoreDir:                dir,
+		Login:                   stsLogin(t, url, logins),
+		ReplaceCrossSigningKeys: stsReplaceCrossSigningKeys(url),
+		Allowed:                 []id.UserID{"@phil:example.org"},
+		HTTP:                    http.DefaultClient,
+		Log:                     zerolog.Nop(),
 	}
 	if in != nil {
 		cfg.InboundURL = in.URL
