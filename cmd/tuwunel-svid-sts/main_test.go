@@ -2,6 +2,8 @@ package main
 
 import (
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/sethvargo/go-envconfig"
@@ -44,5 +46,23 @@ func TestConfigAddrDefaultsToLoopback(t *testing.T) {
 	}
 	if want := "127.0.0.1:8080"; cfg.Addr != want {
 		t.Errorf("addr %q, want %q", cfg.Addr, want)
+	}
+}
+
+func TestTuwunelClientFollowsNoRedirect(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("followed a redirect to %s", r.URL)
+	}))
+	defer elsewhere.Close()
+	tuwunel := httptest.NewServer(http.RedirectHandler(elsewhere.URL, http.StatusTemporaryRedirect))
+	defer tuwunel.Close()
+
+	resp, err := tuwunelClient().Post(tuwunel.URL, "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("status %d, want %d", resp.StatusCode, http.StatusTemporaryRedirect)
 	}
 }

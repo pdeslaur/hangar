@@ -2,9 +2,9 @@
 
 Exchanges [SPIFFE](https://spiffe.io) JWT-SVIDs for Matrix access tokens, so that bots log in to a [tuwunel](https://github.com/matrix-construct/tuwunel) homeserver by workload identity instead of a stored password or token.
 
-It runs in the same pod as tuwunel. At startup it generates an ES256 key, kept only in memory, and writes a tuwunel config file trusting its public key for [JWT login](https://matrix-construct.github.io/tuwunel/authentication/jwt.html). Then, for each request:
+It runs in the same pod as tuwunel. At startup it generates an ES256 key, kept only in memory, and writes a tuwunel config file trusting its public key for [JWT login](https://matrix-construct.github.io/tuwunel/authentication/jwt.html). Then, for each login:
 
-1. it validates the JWT-SVID in the `Authorization: Bearer` header against the Workload API's JWT bundles, which follow the SPIRE server's key rotation, requiring `AUDIENCE`;
+1. it validates the JWT-SVID in the `Authorization: Bearer` header against the Workload API's JWT bundles, which follow the SPIRE server's key rotation, requiring `AUDIENCE` as its only audience;
 2. it maps the SVID's SPIFFE ID to a Matrix localpart through `USERS`, refusing IDs it doesn't list;
 3. it signs a one-minute JWT for that localpart and logs in to tuwunel with it, on the device the request names, if any;
 4. it returns tuwunel's login response, holding the access token.
@@ -15,7 +15,7 @@ This works around two limits of tuwunel's JWT login: it takes a single static ke
 
 tuwunel accepts any `sub` its key signs, so the key can log in as any existing user, not only the ones in `USERS`. That's why it lives in tuwunel's pod and nowhere else: whoever compromises it could equally compromise tuwunel, which holds every access token. tuwunel only signs in existing users (`register_user = false`).
 
-A JWT-SVID is a bearer token: until it expires, whoever holds it can exchange it for an access token lasting much longer. So `AUDIENCE` must be unique to this service, never accepted by another, so that no other service receiving an SVID can replay it here. Callers should fetch SVIDs with short lifetimes, just before exchanging them, and never log them.
+A JWT-SVID is a bearer token: until it expires, whoever holds it can exchange it for an access token lasting much longer. So `AUDIENCE` must be unique to this service, never accepted by another, so that no other service receiving an SVID can replay it here. An SVID for other audiences too is refused, since any of them could replay it. Callers should fetch SVIDs with short lifetimes, just before exchanging them, and never log them.
 
 ## tuwunel config
 
@@ -75,23 +75,23 @@ curl -X POST -H "Authorization: Bearer $SVID" -d '{"device_id": "ABCDEFGHIJ"}' h
 {"user_id": "@bot:example.org", "access_token": "...", "device_id": "ABCDEFGHIJ", "expires_in_ms": 604800000}
 ```
 
-## User-interactive auth
+## Replacing cross-signing keys
 
-Some requests need [user-interactive auth](https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api), such as replacing a user's cross-signing keys, which a bot without a password can't complete. tuwunel takes, as auth, a JWT it would log the user in with: `POST /uia`, with a JWT-SVID as for a login, answers one, in the shape of a request's `auth`:
+Replacing a user's cross-signing keys needs [user-interactive auth](https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api), which a bot without a password can't complete: a bot that lost its keys, with its store, couldn't publish new ones. `POST /cross-signing-keys`, with a JWT-SVID as for a login, takes the caller's access token and its keys, as in a request uploading them:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/uia
+curl -X POST -H "Authorization: Bearer $SVID" \
+    -d '{"access_token": "...", "master_key": {...}, "self_signing_key": {...}, "user_signing_key": {...}}' \
+    http://tuwunel-svid-sts:8080/cross-signing-keys
 ```
 
-```json
-{"type": "org.matrix.login.jwt", "token": "..."}
-```
+It checks, with tuwunel's `whoami`, that the access token is the user's the SVID maps to, then uploads the keys with it and, as auth, a JWT it signs for the user, and answers tuwunel's response. tuwunel takes such a JWT as auth for anything needing user-interactive auth, such as setting the user's password, and for the user its `sub` names, whatever user the access token is: so the JWT never leaves this service, and the check keeps an access token of another user from replacing that user's keys.
 
-The JWT lasts a minute, and logs in the same user as `/` would: it grants the caller nothing a login doesn't.
+Whoever holds an SVID can replace the user's keys, and so make the devices they sign trusted, until the bot publishes its own again; clients show that the user's identity changed.
 
 ## Testing
 
-`go test ./...` runs without tuwunel. To also check the config file, its reload, logins and user-interactive auth against a real tuwunel, run with docker and an image:
+`go test ./...` runs without tuwunel. To also check the config file, its reload, logins and replacing cross-signing keys against a real tuwunel, run with docker and an image:
 
 ```sh
 TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
