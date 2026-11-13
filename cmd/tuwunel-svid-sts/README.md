@@ -75,9 +75,23 @@ curl -X POST -H "Authorization: Bearer $SVID" -d '{"device_id": "ABCDEFGHIJ"}' h
 {"user_id": "@bot:example.org", "access_token": "...", "device_id": "ABCDEFGHIJ", "expires_in_ms": 604800000}
 ```
 
+## User-interactive auth
+
+Some requests need [user-interactive auth](https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api), such as replacing a user's cross-signing keys, which a bot without a password can't complete. tuwunel takes, as auth, a JWT it would log the user in with: `POST /uia`, with a JWT-SVID as for a login, answers one, in the shape of a request's `auth`:
+
+```sh
+curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/uia
+```
+
+```json
+{"type": "org.matrix.login.jwt", "token": "..."}
+```
+
+The JWT lasts a minute, and logs in the same user as `/` would: it grants the caller nothing a login doesn't.
+
 ## Testing
 
-`go test ./...` runs without tuwunel. To also check the config file, its reload and logins against a real tuwunel, run with docker and an image:
+`go test ./...` runs without tuwunel. To also check the config file, its reload, logins and user-interactive auth against a real tuwunel, run with docker and an image:
 
 ```sh
 TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
