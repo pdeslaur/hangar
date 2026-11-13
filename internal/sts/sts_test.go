@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
+	"maunium.net/go/mautrix"
 	mxid "maunium.net/go/mautrix/id"
 )
 
@@ -143,40 +145,46 @@ func TestLogin(t *testing.T) {
 	}
 }
 
-func TestUIA(t *testing.T) {
+func TestReplaceCrossSigningKeys(t *testing.T) {
+	keys := CrossSigningKeys{
+		AccessToken:    "token",
+		MasterKey:      mautrix.CrossSigningKeys{UserID: "@bot:example.org", Usage: []mxid.CrossSigningUsage{mxid.XSUsageMaster}},
+		SelfSigningKey: mautrix.CrossSigningKeys{UserID: "@bot:example.org", Usage: []mxid.CrossSigningUsage{mxid.XSUsageSelfSigning}},
+		UserSigningKey: mautrix.CrossSigningKeys{UserID: "@bot:example.org", Usage: []mxid.CrossSigningUsage{mxid.XSUsageUserSigning}},
+	}
 	for _, tc := range []struct {
 		name   string
 		url    string
 		answer string
 		status int
-		want   UIA
 		err    string
 	}{{
-		name:   "UIA",
-		answer: `{"type": "org.matrix.login.jwt", "token": "jwt"}`,
-		want:   UIA{Type: "org.matrix.login.jwt", Token: "jwt"},
+		name:   "replaced",
+		answer: `{}`,
 	}, {
 		name:   "URL with a slash",
 		url:    "/",
-		answer: `{"type": "org.matrix.login.jwt", "token": "jwt"}`,
-		want:   UIA{Type: "org.matrix.login.jwt", Token: "jwt"},
+		answer: `{}`,
 	}, {
 		name:   "refused",
 		answer: "forbidden",
 		status: http.StatusForbidden,
 		err:    "403 Forbidden: forbidden",
-	}, {
-		name:   "incomplete",
-		answer: `{"type": "org.matrix.login.jwt"}`,
-		err:    "incomplete UIA",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPost || r.URL.Path != "/uia" {
-					t.Errorf("%s %s, want POST /uia", r.Method, r.URL.Path)
+				if r.Method != http.MethodPost || r.URL.Path != "/cross-signing-keys" {
+					t.Errorf("%s %s, want POST /cross-signing-keys", r.Method, r.URL.Path)
 				}
 				if _, err := jwtsvid.ParseInsecure(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), []string{audience}); err != nil {
 					t.Errorf("JWT-SVID for the audience %s: %v", audience, err)
+				}
+				var got CrossSigningKeys
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decoding the request: %v", err)
+				}
+				if !reflect.DeepEqual(got, keys) {
+					t.Errorf("request %+v, want %+v", got, keys)
 				}
 				if tc.status != 0 {
 					w.WriteHeader(tc.status)
@@ -186,18 +194,15 @@ func TestUIA(t *testing.T) {
 			defer sts.Close()
 			c := &Client{URL: sts.URL + tc.url, Audience: audience, SVIDs: svids{}, HTTP: sts.Client()}
 
-			got, err := c.UIA(t.Context())
-			if tc.err != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.err) {
-					t.Fatalf("err = %v, want %q", err, tc.err)
+			err := c.ReplaceCrossSigningKeys(t.Context(), keys)
+			if tc.err == "" {
+				if err != nil {
+					t.Fatal(err)
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want {
-				t.Errorf("got %+v, want %+v", got, tc.want)
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("err = %v, want %q", err, tc.err)
 			}
 		})
 	}

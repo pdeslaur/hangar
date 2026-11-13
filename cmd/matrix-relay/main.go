@@ -69,13 +69,13 @@ func run(ctx context.Context, cfg *config) error {
 	}
 
 	r, err := relay.Open(ctx, relay.Config{
-		HomeserverURL: cfg.HomeserverURL,
-		StoreDir:      cfg.StoreDir,
-		Login:         login.Login,
-		UIA:           login.UIA,
-		Allowed:       cfg.AllowedUsers,
-		InboundURL:    cfg.InboundURL,
-		HTTP:          &http.Client{Timeout: 10 * time.Second},
+		HomeserverURL:           cfg.HomeserverURL,
+		StoreDir:                cfg.StoreDir,
+		Login:                   login.Login,
+		ReplaceCrossSigningKeys: login.ReplaceCrossSigningKeys,
+		Allowed:                 cfg.AllowedUsers,
+		InboundURL:              cfg.InboundURL,
+		HTTP:                    &http.Client{Timeout: 10 * time.Second},
 		// mautrix logs warnings and errors as JSON.
 		Log: zerolog.New(os.Stderr).Level(zerolog.WarnLevel).With().Timestamp().Str("component", "mautrix").Logger(),
 	})

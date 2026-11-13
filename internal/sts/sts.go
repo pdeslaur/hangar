@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -72,28 +73,29 @@ func (c *Client) Login(ctx context.Context, device id.DeviceID) (Session, error)
 	return s, nil
 }
 
-// UIA is the auth of a request needing user-interactive auth, such as
-// replacing the user's cross-signing keys: a JWT tuwunel would log the user
-// in with, lasting a minute.
-type UIA struct {
-	Type  string `json:"type"`
-	Token string `json:"token"`
+// CrossSigningKeys is a request replacing the user's cross-signing keys,
+// which needs user-interactive auth: tuwunel-svid-sts completes it, with a JWT
+// that never leaves it.
+type CrossSigningKeys struct {
+	// AccessToken is the relay's, of the user.
+	AccessToken    string                   `json:"access_token"`
+	MasterKey      mautrix.CrossSigningKeys `json:"master_key"`
+	SelfSigningKey mautrix.CrossSigningKeys `json:"self_signing_key"`
+	UserSigningKey mautrix.CrossSigningKeys `json:"user_signing_key"`
 }
 
-// UIA fetches a UIA for the user, with a JWT-SVID fetched for the purpose.
-func (c *Client) UIA(ctx context.Context) (UIA, error) {
-	u, err := url.JoinPath(c.URL, "uia")
+// ReplaceCrossSigningKeys replaces the user's cross-signing keys with keys,
+// with a JWT-SVID fetched for the purpose.
+func (c *Client) ReplaceCrossSigningKeys(ctx context.Context, keys CrossSigningKeys) error {
+	u, err := url.JoinPath(c.URL, "cross-signing-keys")
 	if err != nil {
-		return UIA{}, err
+		return err
 	}
-	var auth UIA
-	if err := c.post(ctx, u, nil, &auth); err != nil {
-		return UIA{}, err
+	body, err := json.Marshal(keys)
+	if err != nil {
+		return err
 	}
-	if auth.Type == "" || auth.Token == "" {
-		return UIA{}, fmt.Errorf("tuwunel-svid-sts answered an incomplete UIA of type %q", auth.Type)
-	}
-	return auth, nil
+	return c.post(ctx, u, body, &struct{}{})
 }
 
 // post sends body to u with a JWT-SVID, decoding the answer into v.

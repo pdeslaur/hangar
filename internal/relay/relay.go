@@ -24,6 +24,7 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/crypto"
 	"maunium.net/go/mautrix/crypto/cryptohelper"
+	"maunium.net/go/mautrix/crypto/signatures"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 	"maunium.net/go/mautrix/sqlstatestore"
@@ -42,9 +43,9 @@ type Config struct {
 	// Login logs in on a device, or on one the homeserver creates when it's
 	// empty.
 	Login func(ctx context.Context, device id.DeviceID) (sts.Session, error)
-	// UIA completes the user-interactive auth replacing the user's
-	// cross-signing keys needs.
-	UIA func(ctx context.Context) (sts.UIA, error)
+	// ReplaceCrossSigningKeys replaces the user's cross-signing keys,
+	// which needs user-interactive auth.
+	ReplaceCrossSigningKeys func(ctx context.Context, keys sts.CrossSigningKeys) error
 	// Allowed are the users whose invites it accepts, declining others',
 	// and whose messages it forwards.
 	Allowed []id.UserID
@@ -207,7 +208,8 @@ func pickleKey(path string) ([]byte, error) {
 // device with them. The first time, it generates them, keeping their seeds
 // in the store. It publishes them when the user has none, or others, such
 // as a client's from before the relay, which it replaces: the homeserver
-// needs user-interactive auth for that, which it completes with a UIA.
+// needs user-interactive auth for that, which ReplaceCrossSigningKeys
+// completes.
 func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) error {
 	mach := r.crypto.Machine()
 	resp, err := r.cli.QueryKeys(ctx, &mautrix.ReqQueryKeys{
@@ -250,19 +252,8 @@ func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) err
 	}
 	ours := mach.CrossSigningKeys.MasterKey.PublicKey()
 	if published != ours {
-		// The homeserver takes a user's first keys without user-interactive
-		// auth, and asks for it to replace them.
-		var uiaErr error
-		uia := func(*mautrix.RespUserInteractive) any {
-			auth, err := r.cfg.UIA(ctx)
-			if err != nil {
-				uiaErr = fmt.Errorf("fetching a UIA: %w", err)
-				return nil
-			}
-			return auth
-		}
-		if err := mach.PublishCrossSigningKeys(ctx, mach.CrossSigningKeys, uia); err != nil {
-			return fmt.Errorf("publishing cross-signing keys: %w", errors.Join(uiaErr, err))
+		if err := r.publishCrossSigningKeys(ctx, store); err != nil {
+			return fmt.Errorf("publishing cross-signing keys: %w", err)
 		}
 		if published == "" {
 			clog.InfoContext(ctx, "published cross-signing keys", "master_key", ours)
@@ -271,6 +262,55 @@ func (r *Relay) crossSign(ctx context.Context, store *crypto.SQLCryptoStore) err
 		}
 	}
 	return mach.SignOwnDevice(ctx, mach.OwnIdentity())
+}
+
+// publishCrossSigningKeys publishes the machine's cross-signing keys, like
+// mautrix's PublishCrossSigningKeys, but through ReplaceCrossSigningKeys: the
+// homeserver takes a user's first keys without user-interactive auth, but
+// needs it to replace them.
+func (r *Relay) publishCrossSigningKeys(ctx context.Context, store *crypto.SQLCryptoStore) error {
+	mach := r.crypto.Machine()
+	keys := mach.CrossSigningKeys
+	user := r.cli.UserID
+	master := keys.MasterKey.PublicKey()
+	self := crossSigningKey(user, id.XSUsageSelfSigning, keys.SelfSigningKey.PublicKey())
+	selfSig, err := keys.MasterKey.SignJSON(self)
+	if err != nil {
+		return fmt.Errorf("signing the self-signing key: %w", err)
+	}
+	self.Signatures = signatures.NewSingleSignature(user, id.KeyAlgorithmEd25519, master.String(), selfSig)
+	userSigning := crossSigningKey(user, id.XSUsageUserSigning, keys.UserSigningKey.PublicKey())
+	userSig, err := keys.MasterKey.SignJSON(userSigning)
+	if err != nil {
+		return fmt.Errorf("signing the user-signing key: %w", err)
+	}
+	userSigning.Signatures = signatures.NewSingleSignature(user, id.KeyAlgorithmEd25519, master.String(), userSig)
+
+	if err := r.cfg.ReplaceCrossSigningKeys(ctx, sts.CrossSigningKeys{
+		AccessToken:    *r.token.Load(),
+		MasterKey:      crossSigningKey(user, id.XSUsageMaster, master),
+		SelfSigningKey: self,
+		UserSigningKey: userSigning,
+	}); err != nil {
+		return err
+	}
+	if err := store.PutSignature(ctx, user, keys.SelfSigningKey.PublicKey(), user, master, selfSig); err != nil {
+		return err
+	}
+	if err := store.PutSignature(ctx, user, keys.UserSigningKey.PublicKey(), user, master, userSig); err != nil {
+		return err
+	}
+	// The device signs the master key once the homeserver has it.
+	return mach.SignOwnMasterKey(ctx)
+}
+
+// crossSigningKey is user's cross-signing key pub, for usage.
+func crossSigningKey(user id.UserID, usage id.CrossSigningUsage, pub id.Ed25519) mautrix.CrossSigningKeys {
+	return mautrix.CrossSigningKeys{
+		UserID: user,
+		Usage:  []id.CrossSigningUsage{usage},
+		Keys:   map[id.KeyID]id.Ed25519{id.NewKeyID(id.KeyAlgorithmEd25519, pub.String()): pub},
+	}
 }
 
 // Run syncs, and renews the access token before it expires, until ctx is

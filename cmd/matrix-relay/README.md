@@ -8,7 +8,7 @@ Built on [mautrix-go](https://github.com/mautrix/go), with its olm in Go, so wit
 
 - **Login.** It fetches a JWT-SVID for `STS_AUDIENCE` from the Workload API and exchanges it at `STS_URL` for an access token, on the device its store holds; the first time, on a device the homeserver creates. Once four fifths of the token's lifetime has passed, it logs in again on the same device, which keeps its keys, retrying every minute while that fails.
 - **Encryption.** Its crypto store, in `STORE_DIR`, holds the device's keys and the rooms' keys. Their secrets are encrypted with a key generated the first time, `pickle.key`, beside the store, as mautrix's bridges do: it protects a copy of the database alone, not of the whole directory.
-- **Cross-signing.** The first time, it generates cross-signing keys for its user, keeping them in its store. It publishes them whenever its user has other keys, or none, and signs its device with them, so that clients show its messages as its user's rather than an unverified device's. Replacing a user's keys, such as a client's from before the relay, needs user-interactive auth, which the user, without a password, completes through tuwunel-svid-sts's [user-interactive auth](https://github.com/pdeslaur/tuwunel-svid-sts#user-interactive-auth): clients that saw the earlier keys show that its user's identity changed.
+- **Cross-signing.** The first time, it generates cross-signing keys for its user, keeping them in its store. It publishes them whenever its user has other keys, or none, and signs its device with them, so that clients show its messages as its user's rather than an unverified device's. Replacing a user's keys, such as a client's from before the relay, or its own from a store it lost, needs user-interactive auth, which the user, without a password, can't complete: it replaces them through tuwunel-svid-sts's [`cross-signing-keys`](https://github.com/pdeslaur/tuwunel-svid-sts#replacing-cross-signing-keys). Clients that saw the earlier keys show that its user's identity changed.
 - **Rooms.** It joins the rooms a user in `ALLOWED_USERS` invites it to, and declines other invites.
 - **Sending.** It answers once it has synced. Before sending to a room it isn't sure is encrypted, it asks the homeserver: it never sends in the clear to an encrypted room.
 - **Receiving.** It forwards the messages users in `ALLOWED_USERS` send, decrypted, to `INBOUND_URL`, if set. It skips messages from before it started, such as commands sent while it was down.
@@ -45,7 +45,7 @@ A message it forwards to `INBOUND_URL`:
 | Variable | Default | |
 |---|---|---|
 | `HOMESERVER_URL` | | The homeserver's client API. Required. |
-| `STS_URL` | | tuwunel-svid-sts's URL, like `http://matrix:8080/` through the pod's mTLS client; it fetches user-interactive auth at `uia` under it. Required. |
+| `STS_URL` | | tuwunel-svid-sts's URL, like `http://matrix:8080/` through the pod's mTLS client; it replaces cross-signing keys at `cross-signing-keys` under it. Required. |
 | `STS_AUDIENCE` | | The audience tuwunel-svid-sts requires of JWT-SVIDs. Required. |
 | `ALLOWED_USERS` | | The users whose invites it accepts and whose messages it forwards: `@phil:example.org,...`. Required. |
 | `INBOUND_URL` | | Where it forwards messages; unset, it forwards none. |
