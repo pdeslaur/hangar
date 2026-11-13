@@ -12,17 +12,28 @@ import (
 	"time"
 )
 
+// tuwunel is a tuwunel container.
+type tuwunel struct {
+	// url is its client API's base URL.
+	url string
+	// id is the container's.
+	id string
+	// config is the config file it reads, on the host.
+	config string
+}
+
 // startTuwunel runs the tuwunel image named by TUWUNEL_IMAGE with docker,
-// reading the config file signer writes, and returns its client API URL. It
-// creates the user "bot". Without TUWUNEL_IMAGE, the test is skipped.
-func startTuwunel(t *testing.T, signer *Signer) string {
+// reading the config file signer writes. It creates the user "bot". Without
+// TUWUNEL_IMAGE, the test is skipped.
+func startTuwunel(t *testing.T, signer *Signer) tuwunel {
 	t.Helper()
 	image := os.Getenv("TUWUNEL_IMAGE")
 	if image == "" {
 		t.Skip("TUWUNEL_IMAGE unset, like ghcr.io/matrix-construct/tuwunel:latest")
 	}
 	dir := t.TempDir()
-	if err := signer.WriteTuwunelConfig(filepath.Join(dir, "jwt.toml")); err != nil {
+	config := filepath.Join(dir, "jwt.toml")
+	if err := signer.WriteTuwunelConfig(config); err != nil {
 		t.Fatal(err)
 	}
 	out, err := exec.Command("docker", "run", "--detach", "--rm",
@@ -58,7 +69,7 @@ func startTuwunel(t *testing.T, signer *Signer) string {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return url
+				return tuwunel{url: url, id: id, config: config}
 			}
 		}
 		if time.Now().After(deadline) {
@@ -105,7 +116,7 @@ func TestTuwunel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	url := startTuwunel(t, signer)
+	url := startTuwunel(t, signer).url
 	ca := newAuthority(t)
 	const ghost = "spiffe://example.org/ghost"
 	h := &Handler{
@@ -172,5 +183,57 @@ func TestTuwunel(t *testing.T) {
 	status, body := login(t, h, ca.svid(t, ghost, testAudience, later))
 	if status == http.StatusOK || body["errcode"] != "M_NOT_FOUND" {
 		t.Errorf("logging in as ghost: %d %v, want M_NOT_FOUND", status, body)
+	}
+}
+
+// TestTuwunelReload checks that tuwunel trusts the key of the config file it
+// reads again on SIGUSR1, without restarting, and no longer the one before.
+func TestTuwunelReload(t *testing.T) {
+	before, err := NewSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := startTuwunel(t, before)
+	ca := newAuthority(t)
+	handler := func(signer *Signer) http.Handler {
+		return &Handler{
+			Bundles:   ca.bundle,
+			Audience:  testAudience,
+			Users:     map[string]string{bot: "bot"},
+			Signer:    signer,
+			MatrixURL: tw.url,
+			Client:    http.DefaultClient,
+		}
+	}
+	later := time.Now().Add(5 * time.Minute)
+	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later)); status != http.StatusOK {
+		t.Fatalf("logging in before reloading: %d %v", status, body)
+	}
+
+	after, err := NewSigner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := after.WriteTuwunelConfig(tw.config); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("docker", "kill", "--signal", "USR1", tw.id).CombinedOutput(); err != nil {
+		t.Fatalf("signaling tuwunel: %v: %s", err, out)
+	}
+
+	// tuwunel reloads in the background: wait for the key to be trusted.
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, body := login(t, handler(after), ca.svid(t, bot, testAudience, later))
+		if status == http.StatusOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("logging in with the reloaded key: %d %v", status, body)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if status, body := login(t, handler(before), ca.svid(t, bot, testAudience, later)); status == http.StatusOK {
+		t.Errorf("logging in with the key before reloading: %d %v, want an error", status, body)
 	}
 }

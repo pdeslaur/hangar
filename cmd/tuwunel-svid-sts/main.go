@@ -14,6 +14,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/tuwunel-svid-sts/internal/login"
+	"github.com/pdeslaur/tuwunel-svid-sts/internal/systemd"
 	"github.com/sethvargo/go-envconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
@@ -53,6 +54,13 @@ func run(ctx context.Context, cfg *config) error {
 		return err
 	}
 	clog.InfoContext(ctx, "wrote tuwunel config", "path", cfg.TuwunelConfigFile)
+
+	// Ready once the config file is written: tuwunel can start, or reload
+	// it, before the Workload API answers, which would otherwise keep tuwunel
+	// waiting while SPIRE is down.
+	if err := systemd.Ready(); err != nil {
+		return err
+	}
 
 	// The Workload API's address comes from SPIFFE_ENDPOINT_SOCKET.
 	bundles, err := workloadapi.NewJWTSource(ctx)

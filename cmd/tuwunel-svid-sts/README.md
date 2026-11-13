@@ -39,7 +39,7 @@ register_user = false
 expire_access_token = true
 ```
 
-A new key is generated each time the process starts, so tuwunel must start after it, and restart with it.
+A new key is generated each time the process starts, so tuwunel must read the file again each time: it starts after it, and reloads its config on `SIGUSR1` when it restarts, without restarting itself; every `[global.jwt]` setting is reloadable. Under systemd, with `Notify=true` it tells systemd it's ready once the file is written, before the Workload API answers, so that tuwunel starts even while SPIRE is down.
 
 With `expire_access_token`, the access tokens it hands out last tuwunel's `access_token_ttl`, a week by default, without a refresh token: a bot logs in again when its token expires.
 
@@ -72,7 +72,7 @@ curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/
 
 ## Testing
 
-`go test ./...` runs without tuwunel. To also check the config file and logins against a real tuwunel, run with docker and an image:
+`go test ./...` runs without tuwunel. To also check the config file, its reload and logins against a real tuwunel, run with docker and an image:
 
 ```sh
 TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
