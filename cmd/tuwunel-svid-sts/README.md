@@ -15,6 +15,8 @@ This works around two limits of tuwunel's JWT login: it takes a single static ke
 
 tuwunel accepts any `sub` its key signs, so the key can log in as any existing user, not only the ones in `USERS`. That's why it lives in tuwunel's pod and nowhere else: whoever compromises it could equally compromise tuwunel, which holds every access token. tuwunel only signs in existing users (`register_user = false`).
 
+A JWT-SVID is a bearer token: until it expires, whoever holds it can exchange it for an access token lasting much longer, and, since every login uses the same device, end the session of the bot it belongs to. So `AUDIENCE` must be unique to this service, never accepted by another, so that no other service receiving an SVID can replay it here. Callers should fetch SVIDs with short lifetimes, just before exchanging them, and never log them.
+
 ## tuwunel config
 
 The file written to `TUWUNEL_CONFIG_FILE`, for tuwunel to read through `TUWUNEL_CONFIG`; `TUWUNEL_` environment variables still override it:
@@ -45,16 +47,16 @@ With `expire_access_token`, the access tokens it hands out last tuwunel's `acces
 
 | Variable | Default | |
 |---|---|---|
-| `AUDIENCE` | | The audience a JWT-SVID needs. Required. |
+| `AUDIENCE` | | The audience a JWT-SVID needs, unique to this service. Required. |
 | `USERS` | | SPIFFE IDs and the localparts they log in as: `spiffe://example.org/bot=bot,...`. Required. |
 | `TUWUNEL_CONFIG_FILE` | | Where to write the tuwunel config file. Required. |
 | `MATRIX_URL` | `http://localhost:6167` | tuwunel's client API. |
-| `ADDR` | `:8080` | Where it listens, behind an mTLS sidecar. |
+| `ADDR` | `127.0.0.1:8080` | Where it listens, plain HTTP for the mTLS sidecar in its pod. Keep it on loopback: on another interface, callers can skip the sidecar and send SVIDs and access tokens in the clear. |
 | `SPIFFE_ENDPOINT_SOCKET` | | The Workload API, like `unix:///run/spire/agent/api.sock`. |
 
 ## Usage
 
-With `$SVID` a JWT-SVID for the audience `AUDIENCE`, fetched from the caller's Workload API:
+With `$SVID` a JWT-SVID for the audience `AUDIENCE`, fetched from the caller's Workload API. The caller reaches it over mTLS: its own mTLS client, listening on loopback, connects to the sidecar in front of this service, so the request itself is plain HTTP to that client:
 
 ```sh
 curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/
