@@ -6,7 +6,7 @@ It runs in the same pod as tuwunel. At startup it generates an ES256 key, kept o
 
 1. it validates the JWT-SVID in the `Authorization: Bearer` header against the Workload API's JWT bundles, which follow the SPIRE server's key rotation, requiring `AUDIENCE`;
 2. it maps the SVID's SPIFFE ID to a Matrix localpart through `USERS`, refusing IDs it doesn't list;
-3. it signs a one-minute JWT for that localpart and logs in to tuwunel with it, as the device `TUWUNELSVIDSTS`;
+3. it signs a one-minute JWT for that localpart and logs in to tuwunel with it, on the device the request names, if any;
 4. it returns tuwunel's login response, holding the access token.
 
 This works around two limits of tuwunel's JWT login: it takes a single static key, where SPIRE rotates its keys, and it uses `sub` as the localpart, where a JWT-SVID's `sub` is a SPIFFE ID.
@@ -43,9 +43,14 @@ A new key is generated each time the process starts, so tuwunel must read the fi
 
 With `expire_access_token`, the access tokens it hands out last tuwunel's `access_token_ttl`, a week by default, without a refresh token: a bot logs in again when its token expires.
 
-## Rotating access tokens
+## Devices and rotating access tokens
 
-Every login is on the device `TUWUNELSVIDSTS`. Unlike the Matrix spec says, tuwunel doesn't end a device's access tokens when it logs in on it again: it adds one, and the earlier ones last until they expire. Logging out ends them all, since tuwunel deletes the device. So a bot rotates its token by logging out with the old one, then exchanging a fresh SVID: that also ends any token someone else got for it, like by replaying an SVID. Deleting the device drops its end-to-end encryption keys, so this suits bots that don't use encrypted rooms.
+A request may name the device to log in on, `{"device_id": "..."}`, of letters, digits, `.`, `_` and `-`; without one, tuwunel creates a device for each login.
+
+Unlike the Matrix spec says, tuwunel doesn't end a device's access tokens when it logs in on it again: it adds one, and the earlier ones last until they expire. Logging out ends them all, since tuwunel deletes the device. So a bot rotates its token one of two ways:
+
+- **With end-to-end encryption**, it logs in again on the device it keeps keys for, first logging in without one to have tuwunel create it: the device keeps its keys, and earlier tokens last until they expire.
+- **Without**, it logs out with the old token, then exchanges a fresh SVID: that also ends any token someone else got for it, like by replaying an SVID, but deleting the device drops its keys.
 
 ## Configuration
 
@@ -63,11 +68,11 @@ Every login is on the device `TUWUNELSVIDSTS`. Unlike the Matrix spec says, tuwu
 With `$SVID` a JWT-SVID for the audience `AUDIENCE`, fetched from the caller's Workload API. The caller reaches it over mTLS: its own mTLS client, listening on loopback, connects to the sidecar in front of this service, so the request itself is plain HTTP to that client:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $SVID" http://tuwunel-svid-sts:8080/
+curl -X POST -H "Authorization: Bearer $SVID" -d '{"device_id": "ABCDEFGHIJ"}' http://tuwunel-svid-sts:8080/
 ```
 
 ```json
-{"user_id": "@bot:example.org", "access_token": "...", "device_id": "TUWUNELSVIDSTS", "expires_in_ms": 604800000}
+{"user_id": "@bot:example.org", "access_token": "...", "device_id": "ABCDEFGHIJ", "expires_in_ms": 604800000}
 ```
 
 ## Testing

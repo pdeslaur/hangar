@@ -5,8 +5,10 @@ package login
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,17 +17,27 @@ import (
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
 )
 
-// DeviceID is the Matrix device every login uses, so that logins don't add a
-// device each time, and logging out ends every access token it handed out
-// for a user.
-const DeviceID = "TUWUNELSVIDSTS"
+// deviceID is a device ID a caller may log in on: Matrix leaves them opaque,
+// tuwunel generates ten capital letters.
+var deviceID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// maxRequest bounds the request body.
+const maxRequest = 4 << 10
+
+// Request is the optional JSON body of a request.
+type Request struct {
+	// DeviceID is the device to log in on, such as the one a client keeps
+	// end-to-end encryption keys for: logging in again on it adds an access
+	// token, keeping its keys. Without it, tuwunel creates a device.
+	DeviceID string `json:"device_id,omitempty"`
+}
 
 // maxResponse bounds how much of tuwunel's response it relays.
 const maxResponse = 64 << 10
 
-// Handler answers POST requests carrying a JWT-SVID as a bearer token with
-// the response of tuwunel's login endpoint for the Matrix user the SVID's
-// SPIFFE ID maps to.
+// Handler answers POST requests carrying a JWT-SVID as a bearer token, and
+// optionally a Request, with the response of tuwunel's login endpoint for the
+// Matrix user the SVID's SPIFFE ID maps to.
 type Handler struct {
 	// Bundles verifies JWT-SVIDs; the Workload API's keeps up with the
 	// SPIRE server's key rotation.
@@ -70,18 +82,34 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The body is read only once the caller is authenticated.
+	var request Request
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequest))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if request.DeviceID != "" && !deviceID.MatchString(request.DeviceID) {
+		http.Error(w, "invalid device_id", http.StatusBadRequest)
+		return
+	}
+
 	jwt, err := h.Signer.Sign(localpart, time.Now())
 	if err != nil {
 		clog.ErrorContext(ctx, "signing JWT", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	body, err := json.Marshal(map[string]string{
+	login := map[string]string{
 		"type":                        "org.matrix.login.jwt",
 		"token":                       jwt,
-		"device_id":                   DeviceID,
 		"initial_device_display_name": "tuwunel-svid-sts",
-	})
+	}
+	if request.DeviceID != "" {
+		login["device_id"] = request.DeviceID
+	}
+	body, err := json.Marshal(login)
 	if err != nil {
 		clog.ErrorContext(ctx, "encoding login request", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -105,7 +133,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// tuwunel's response, an access token or a Matrix error, goes to the
 	// caller as is.
-	clog.InfoContext(ctx, "logged in", "spiffe_id", id, "localpart", localpart, "status", resp.StatusCode)
+	clog.InfoContext(ctx, "logged in", "spiffe_id", id, "localpart", localpart, "device_id", request.DeviceID, "status", resp.StatusCode)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)

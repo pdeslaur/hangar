@@ -60,7 +60,8 @@ func (a *authority) svid(t *testing.T, sub, aud string, exp time.Time) string {
 }
 
 // fakeTuwunel checks JWT logins the way tuwunel is configured to, by the
-// file TuwunelConfig writes, and answers with the user's ID.
+// file TuwunelConfig writes, and answers with the user's ID and the device,
+// "ASSIGNED" when the login names none.
 func fakeTuwunel(t *testing.T, signer *Signer) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +77,11 @@ func fakeTuwunel(t *testing.T, signer *Signer) *httptest.Server {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decoding login request: %v", err)
 		}
-		if body.Type != "org.matrix.login.jwt" || body.DeviceID != DeviceID {
-			t.Errorf("login request: type %q, device %q", body.Type, body.DeviceID)
+		if body.Type != "org.matrix.login.jwt" {
+			t.Errorf("login request of type %q", body.Type)
+		}
+		if body.DeviceID == "" {
+			body.DeviceID = "ASSIGNED"
 		}
 		token, err := jwt.ParseSigned(body.Token, []jose.SignatureAlgorithm{jose.ES256})
 		if err != nil {
@@ -124,14 +128,49 @@ func TestHandler(t *testing.T) {
 		name   string
 		method string
 		auth   string
+		body   string
 		status int
 		user   string
+		device string
 	}{{
 		name:   "mapped SPIFFE ID",
 		method: http.MethodPost,
 		auth:   "Bearer " + ca.svid(t, bot, testAudience, later),
 		status: http.StatusOK,
 		user:   "@bot:example.org",
+		device: "ASSIGNED",
+	}, {
+		name:   "device",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svid(t, bot, testAudience, later),
+		body:   `{"device_id": "RELAY"}`,
+		status: http.StatusOK,
+		user:   "@bot:example.org",
+		device: "RELAY",
+	}, {
+		name:   "invalid device",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svid(t, bot, testAudience, later),
+		body:   `{"device_id": "RELAY\nlogged in"}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "unknown field",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svid(t, bot, testAudience, later),
+		body:   `{"user": "admin"}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "body too large",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svid(t, bot, testAudience, later),
+		body:   `{"device_id": "` + strings.Repeat("A", maxRequest) + `"}`,
+		status: http.StatusBadRequest,
+	}, {
+		name:   "body of an unmapped SPIFFE ID",
+		method: http.MethodPost,
+		auth:   "Bearer " + ca.svid(t, "spiffe://example.org/stranger", testAudience, later),
+		body:   "not JSON",
+		status: http.StatusForbidden,
 	}, {
 		name:   "unmapped SPIFFE ID",
 		method: http.MethodPost,
@@ -163,7 +202,7 @@ func TestHandler(t *testing.T) {
 		status: http.StatusMethodNotAllowed,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, "/", nil)
+			req := httptest.NewRequest(tc.method, "/", strings.NewReader(tc.body))
 			if tc.auth != "" {
 				req.Header.Set("Authorization", tc.auth)
 			}
@@ -176,13 +215,17 @@ func TestHandler(t *testing.T) {
 				return
 			}
 			var resp struct {
-				UserID string `json:"user_id"`
+				UserID   string `json:"user_id"`
+				DeviceID string `json:"device_id"`
 			}
 			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 				t.Fatal(err)
 			}
 			if resp.UserID != tc.user {
 				t.Errorf("user %q, want %q", resp.UserID, tc.user)
+			}
+			if resp.DeviceID != tc.device {
+				t.Errorf("device %q, want %q", resp.DeviceID, tc.device)
 			}
 		})
 	}
