@@ -108,16 +108,27 @@ jobs:
                       --tags latest \
                       --image-label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
                       $(go list ./cmd/...) >images.txt
-                  while read -r image; do
-                      if cosign verify "${image}" \
+                  sign() {
+                      if cosign verify "$1" \
                               --certificate-identity "${IDENTITY}" \
                               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
                               >/dev/null 2>&1; then
-                          echo "Already signed: ${image}"
-                          continue
+                          echo "Already signed: $1"
+                          return
                       fi
-                      cosign sign --yes --recursive "${image}"
+                      cosign sign --yes --recursive "$1"
+                  }
+                  # Signs the images in parallel, failing if any fails.
+                  pids=()
+                  while read -r image; do
+                      sign "${image}" &
+                      pids+=($!)
                   done <images.txt
+                  status=0
+                  for pid in "${pids[@]}"; do
+                      wait "${pid}" || status=1
+                  done
+                  exit "${status}"
 
             - name: Build only
               if: github.event_name == 'pull_request'
