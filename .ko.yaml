@@ -1,0 +1,11 @@
+defaultBaseImage: cgr.dev/chainguard/static:latest
+defaultPlatforms:
+    - linux/amd64
+    - linux/arm64
+builds:
+    - id: matrix-relay
+      main: ./cmd/matrix-relay
+      # goolm is mautrix's olm in Go; without it, mautrix needs libolm and
+      # cgo.
+      flags:
+          - -tags=goolm

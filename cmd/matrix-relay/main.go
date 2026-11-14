@@ -19,9 +19,9 @@ import (
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/pdeslaur/matrix-relay/internal/relay"
-	"github.com/pdeslaur/matrix-relay/internal/sts"
-	"github.com/pdeslaur/matrix-relay/internal/systemd"
+	"github.com/pdeslaur/hangar/internal/relay"
+	"github.com/pdeslaur/hangar/internal/sts"
+	"github.com/pdeslaur/hangar/internal/systemd"
 )
 
 type config struct {

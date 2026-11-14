@@ -1,16 +1,10 @@
-# oci-spliitforynab
+# spliitforynab
 
 Go service that imports [Spliit Cloud](https://github.com/antonio-ivanovski/spliit-cloud) group expenses into [YNAB](https://ynab.com) for a single user. No UI, no database — YNAB's `import_id` deduplication makes re-syncs safe.
 
 ## Image
 
-`ghcr.io/pdeslaur/oci-spliitforynab`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. It's built with [ko](https://ko.build) on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview) by this repo's [build workflow](.github/workflows/build.yaml), and rebuilt daily to pick up base image fixes. Verify its signature with:
-
-```sh
-cosign verify ghcr.io/pdeslaur/oci-spliitforynab:latest \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --certificate-identity https://github.com/pdeslaur/oci-spliitforynab/.github/workflows/build.yaml@refs/heads/main
-```
+`ghcr.io/pdeslaur/spliitforynab`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. See [Images](../../README.md#images) for how it's built and how to verify its signature.
 
 ## Usage
 
@@ -24,7 +18,7 @@ podman run -d --restart=always \
     -e SYNC_INTERVAL=1h \
     -v spliitforynab:/data \
     -p 127.0.0.1:8080:8080 \
-    ghcr.io/pdeslaur/oci-spliitforynab:latest
+    ghcr.io/pdeslaur/spliitforynab:latest
 ```
 
 Then open <http://127.0.0.1:8080/login> to sign in. Publishing the port on `127.0.0.1` keeps the service on the host's loopback.
@@ -71,7 +65,3 @@ Get a YNAB personal access token at <https://app.ynab.com/settings/developer>.
 - `GET /healthz` — health check
 
 `/login` and `/sync` act on the shared Spliit grant, so put the service behind authentication (or keep it on loopback) wherever it's reachable by others.
-
-## Updates
-
-[Dependabot](.github/dependabot.yml) checks for Go module updates daily, and the image is rebuilt daily to pick up base image fixes.

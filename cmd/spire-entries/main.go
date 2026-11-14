@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/oci-spire-entries/internal/entries"
+	"github.com/pdeslaur/hangar/internal/entries"
 	"github.com/sethvargo/go-envconfig"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"google.golang.org/grpc"

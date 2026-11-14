@@ -27,7 +27,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/pdeslaur/matrix-relay/internal/sts"
+	"github.com/pdeslaur/hangar/internal/sts"
 )
 
 // jwtKey is the HMAC key the test's tuwunel trusts for JWT logins, like
