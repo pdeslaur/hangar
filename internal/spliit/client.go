@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const userAgent = "spliit-for-ynab"
+const userAgent = "spliitforynab"
 
 // Client calls Spliit's tRPC API with OAuth access tokens from Auth.
 type Client struct {
