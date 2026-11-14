@@ -21,13 +21,13 @@ func NewClient(apiKey string) *Client {
 }
 
 type Transaction struct {
-	AccountID  string `json:"account_id"`
-	Date       string `json:"date"` // YYYY-MM-DD
-	Amount     int64  `json:"amount"` // milliunits; negative = outflow
-	PayeeName  string `json:"payee_name,omitempty"`
-	Memo       string `json:"memo,omitempty"`
-	ImportID   string `json:"import_id,omitempty"` // max 36 chars; deduplicates on import
-	Cleared    string `json:"cleared"`
+	AccountID string `json:"account_id"`
+	Date      string `json:"date"`   // YYYY-MM-DD
+	Amount    int64  `json:"amount"` // milliunits; negative = outflow
+	PayeeName string `json:"payee_name,omitempty"`
+	Memo      string `json:"memo,omitempty"`
+	ImportID  string `json:"import_id,omitempty"` // max 36 chars; deduplicates on import
+	Cleared   string `json:"cleared"`
 }
 
 // ImportTransactions creates or deduplicates transactions in a YNAB budget.

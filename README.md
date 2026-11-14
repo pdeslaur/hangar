@@ -29,6 +29,11 @@ run with docker when `TUWUNEL_IMAGE` names an image:
 GOFLAGS=-tags=goolm TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
 ```
 
+CI runs the tests with the race detector and against tuwunel, and checks
+that the code is formatted with `gofmt`, that `go.mod` is tidy, and that
+`go vet`, [staticcheck](https://staticcheck.dev) and
+[govulncheck](https://go.dev/doc/security/vuln/) find nothing.
+
 ## Images
 
 The [build workflow](.github/workflows/build.yaml) builds every command under
