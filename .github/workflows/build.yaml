@@ -94,16 +94,28 @@ jobs:
             - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
             # Each command publishes to ghcr.io/<owner>/<its directory name>.
+            # Without the commit stamped into the binaries, an image's digest
+            # changes only when what it's built from does, and a digest this
+            # workflow already signed isn't signed again.
             - name: Build and push
               if: github.event_name != 'pull_request'
               env:
                   KO_DOCKER_REPO: ghcr.io/${{ github.repository_owner }}
+                  GOFLAGS: ${{ env.GOFLAGS }} -buildvcs=false
+                  IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/build.yaml@${{ github.ref }}
               run: |
                   ko build --base-import-paths \
-                      --tags latest,$(git rev-parse --short HEAD) \
+                      --tags latest \
                       --image-label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
                       $(go list ./cmd/...) >images.txt
                   while read -r image; do
+                      if cosign verify "${image}" \
+                              --certificate-identity "${IDENTITY}" \
+                              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                              >/dev/null 2>&1; then
+                          echo "Already signed: ${image}"
+                          continue
+                      fi
                       cosign sign --yes --recursive "${image}"
                   done <images.txt
 

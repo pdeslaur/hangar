@@ -40,9 +40,11 @@ that the code is formatted with `gofmt`, that `go.mod` is tidy, and that
 The [build workflow](.github/workflows/build.yaml) builds every command under
 `cmd/` on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview),
 for `linux/amd64` and `linux/arm64`, and publishes each to
-`ghcr.io/pdeslaur/<command>`, tagged `latest` and with the short commit SHA. It
-rebuilds them daily to pick up base image fixes, and signs them with
-[cosign](https://github.com/sigstore/cosign) keyless signing. Verify one with:
+`ghcr.io/pdeslaur/<command>`, tagged `latest`. It rebuilds them daily to pick up
+base image fixes, and signs them with [cosign](https://github.com/sigstore/cosign)
+keyless signing. The binaries don't hold the commit they're built from, so an
+image's digest changes only when its code, dependencies, Go or base image do,
+and a digest already signed isn't signed again. Verify one with:
 
 ```sh
 cosign verify ghcr.io/pdeslaur/<command>:latest \
