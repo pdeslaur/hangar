@@ -6,6 +6,7 @@ to `ghcr.io/pdeslaur/<service>`.
 | Service | |
 |---|---|
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
+| [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
 | [spire-entries](cmd/spire-entries) | Makes a SPIRE server's registration entries match a JSON file. |
 | [spliitforynab](cmd/spliitforynab) | Imports Spliit Cloud group expenses into YNAB. |
 | [tuwunel-svid-sts](cmd/tuwunel-svid-sts) | Exchanges SPIFFE JWT-SVIDs for Matrix access tokens. |
