@@ -9,3 +9,6 @@ builds:
       # cgo.
       flags:
           - -tags=goolm
+baseImageOverrides:
+    # The wrapper execs cloudflared, from its own image.
+    github.com/pdeslaur/hangar/cmd/cloudflared-svid: docker.io/cloudflare/cloudflared:latest

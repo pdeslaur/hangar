@@ -5,8 +5,10 @@ to `ghcr.io/pdeslaur/<service>`.
 
 | Service | |
 |---|---|
+| [cloudflared-svid](cmd/cloudflared-svid) | Runs a Cloudflare tunnel with credentials cloudflare-sts hands its SPIFFE identity. |
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
 | [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
+| [smtp-relay](cmd/smtp-relay) | Sends an app's SMTP email through cloudflare-sts, with its SPIFFE identity. |
 | [spire-entries](cmd/spire-entries) | Makes a SPIRE server's registration entries match a JSON file. |
 | [spliitforynab](cmd/spliitforynab) | Imports Spliit Cloud group expenses into YNAB. |
 | [tuwunel-svid-sts](cmd/tuwunel-svid-sts) | Exchanges SPIFFE JWT-SVIDs for Matrix access tokens. |
@@ -39,6 +41,8 @@ that the code is formatted with `gofmt`, that `go.mod` is tidy, and that
 
 The [build workflow](.github/workflows/build.yaml) builds every command under
 `cmd/` on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview),
+except cloudflared-svid, which builds on
+Cloudflare's [`cloudflare/cloudflared`](https://hub.docker.com/r/cloudflare/cloudflared) (see [`.ko.yaml`](.ko.yaml)),
 for `linux/amd64` and `linux/arm64`, and publishes each to
 `ghcr.io/pdeslaur/<command>`, tagged `latest`. It rebuilds them daily to pick up
 base image fixes, and signs them with [cosign](https://github.com/sigstore/cosign)

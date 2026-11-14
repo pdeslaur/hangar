@@ -4,6 +4,7 @@ go 1.26.11
 
 require (
 	github.com/chainguard-dev/clog v1.8.1
+	github.com/emersion/go-smtp v0.26.0
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/rs/zerolog v1.35.1
 	github.com/sethvargo/go-envconfig v1.4.3
@@ -20,6 +21,7 @@ require (
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Microsoft/go-winio v0.6.4 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
+	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
