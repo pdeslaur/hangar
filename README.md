@@ -8,6 +8,7 @@ to `ghcr.io/pdeslaur/<service>`.
 | [cloudflared-svid](cmd/cloudflared-svid) | Runs a Cloudflare tunnel with credentials cloudflare-sts hands its SPIFFE identity. |
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
 | [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
+| [oidc-relay](cmd/oidc-relay) | Authenticates an app's OIDC client with its SPIFFE identity instead of a secret. |
 | [smtp-relay](cmd/smtp-relay) | Sends an app's SMTP email through cloudflare-sts, with its SPIFFE identity. |
 | [spire-entries](cmd/spire-entries) | Makes a SPIRE server's registration entries match a JSON file. |
 | [spliitforynab](cmd/spliitforynab) | Imports Spliit Cloud group expenses into YNAB. |
