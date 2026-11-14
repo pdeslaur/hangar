@@ -30,7 +30,7 @@ import (
 	"maunium.net/go/mautrix/sqlstatestore"
 	_ "modernc.org/sqlite"
 
-	"github.com/pdeslaur/matrix-relay/internal/sts"
+	"github.com/pdeslaur/hangar/internal/sts"
 )
 
 // Config configures a Relay.

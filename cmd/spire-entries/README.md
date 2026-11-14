@@ -1,4 +1,4 @@
-# oci-spire-entries
+# spire-entries
 
 Makes a [SPIRE](https://spiffe.io/docs/latest/spire-about/) server's registration entries match a JSON file, then exits. It's meant to run beside the server each time the server starts, so that the file, generated from configuration kept in git, is the source of truth for which workloads get which identities, outside Kubernetes, where [spire-controller-manager](https://github.com/spiffe/spire-controller-manager) doesn't apply.
 
@@ -40,13 +40,7 @@ It exits non-zero if any entry fails, after attempting all of them.
 
 ## Image
 
-`ghcr.io/pdeslaur/oci-spire-entries`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. It's built with [ko](https://ko.build) on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview) by this repo's [build workflow](.github/workflows/build.yaml), and rebuilt daily to pick up base image fixes. Verify its signature with:
-
-```sh
-cosign verify ghcr.io/pdeslaur/oci-spire-entries:latest \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --certificate-identity https://github.com/pdeslaur/oci-spire-entries/.github/workflows/build.yaml@refs/heads/main
-```
+`ghcr.io/pdeslaur/spire-entries`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. See [Images](../../README.md#images) for how it's built and how to verify its signature.
 
 ## Usage
 
@@ -59,5 +53,5 @@ podman run --rm \
     -e SOCKET_PATH=/run/spire/admin/api.sock \
     -v ./entries.json:/etc/entries.json:ro \
     -v spire-admin:/run/spire/admin \
-    ghcr.io/pdeslaur/oci-spire-entries:latest
+    ghcr.io/pdeslaur/spire-entries:latest
 ```

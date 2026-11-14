@@ -10,8 +10,8 @@ import (
 	_ "time/tzdata" // expense dates are local to their time zone
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/oci-spliitforynab/internal/spliit"
-	"github.com/pdeslaur/oci-spliitforynab/internal/ynab"
+	"github.com/pdeslaur/hangar/internal/spliit"
+	"github.com/pdeslaur/hangar/internal/ynab"
 	"github.com/sethvargo/go-envconfig"
 )
 

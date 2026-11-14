@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/tuwunel-svid-sts/internal/login"
-	"github.com/pdeslaur/tuwunel-svid-sts/internal/systemd"
+	"github.com/pdeslaur/hangar/internal/login"
+	"github.com/pdeslaur/hangar/internal/systemd"
 	"github.com/sethvargo/go-envconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )

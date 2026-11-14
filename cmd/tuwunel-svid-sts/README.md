@@ -91,18 +91,18 @@ Whoever holds an SVID can replace the user's keys, and so make the devices they 
 
 ## Testing
 
-`go test ./...` runs without tuwunel. To also check the config file, its reload, logins and replacing cross-signing keys against a real tuwunel, run with docker and an image:
+From the repository's root, this runs without tuwunel:
 
 ```sh
-TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
+go test ./cmd/tuwunel-svid-sts/... ./internal/login/... ./internal/systemd/...
+```
+
+To also check the config file, its reload, logins and replacing cross-signing keys against a real tuwunel, run with docker and an image:
+
+```sh
+TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./cmd/tuwunel-svid-sts/... ./internal/login/... ./internal/systemd/...
 ```
 
 ## Image
 
-`ghcr.io/pdeslaur/tuwunel-svid-sts`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. It's built with [ko](https://ko.build) on [`cgr.dev/chainguard/static`](https://images.chainguard.dev/directory/image/static/overview) by this repo's [build workflow](.github/workflows/build.yaml), and rebuilt daily to pick up base image fixes. Verify its signature with:
-
-```sh
-cosign verify ghcr.io/pdeslaur/tuwunel-svid-sts:latest \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --certificate-identity https://github.com/pdeslaur/tuwunel-svid-sts/.github/workflows/build.yaml@refs/heads/main
-```
+`ghcr.io/pdeslaur/tuwunel-svid-sts`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. See [Images](../../README.md#images) for how it's built and how to verify its signature.
