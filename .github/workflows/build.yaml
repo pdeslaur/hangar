@@ -21,6 +21,10 @@ env:
 permissions:
     contents: read
 
+# Each job keeps its own Go cache, since each compiles differently: lint for
+# vet and staticcheck, test with -race, build for arm64 too. A job restores
+# its newest cache and, on main, saves a new one every run, so the cache
+# follows the code rather than go.sum. Pull requests only read main's caches.
 jobs:
     lint:
         runs-on: ubuntu-latest
@@ -29,9 +33,22 @@ jobs:
               with:
                   persist-credentials: false
 
-            - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+            - id: go
+              uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
               with:
                   go-version-file: go.mod
+                  cache: false
+
+            - id: cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  restore-keys: |
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-
 
             - name: gofmt
               run: |
@@ -50,6 +67,14 @@ jobs:
 
             - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 
+            - if: github.ref == 'refs/heads/main'
+              uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: ${{ steps.cache.outputs.cache-primary-key }}
+
     # Runs tuwunel:latest, so holds no permission to publish.
     test:
         runs-on: ubuntu-latest
@@ -58,9 +83,22 @@ jobs:
               with:
                   persist-credentials: false
 
-            - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+            - id: go
+              uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
               with:
                   go-version-file: go.mod
+                  cache: false
+
+            - id: cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  restore-keys: |
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-
 
             # mautrix's OlmMachine caches its own cross-signing keys without a
             # lock, so a client that sends while it syncs races inside
@@ -72,6 +110,14 @@ jobs:
               env:
                   # Also tests against a real tuwunel, with docker.
                   TUWUNEL_IMAGE: ghcr.io/matrix-construct/tuwunel:latest
+
+            - if: github.ref == 'refs/heads/main'
+              uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: ${{ steps.cache.outputs.cache-primary-key }}
 
     build:
         needs: [lint, test]
@@ -85,9 +131,22 @@ jobs:
               with:
                   persist-credentials: false
 
-            - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+            - id: go
+              uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
               with:
                   go-version-file: go.mod
+                  cache: false
+
+            - id: cache
+              uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  restore-keys: |
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
+                      go-${{ github.job }}-${{ steps.go.outputs.go-version }}-
 
             - uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
@@ -133,3 +192,11 @@ jobs:
             - name: Build only
               if: github.event_name == 'pull_request'
               run: ko build --local --platform=linux/amd64 --base-import-paths $(go list ./cmd/...)
+
+            - if: github.ref == 'refs/heads/main'
+              uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+              with:
+                  path: |
+                      ~/.cache/go-build
+                      ~/go/pkg/mod
+                  key: ${{ steps.cache.outputs.cache-primary-key }}
