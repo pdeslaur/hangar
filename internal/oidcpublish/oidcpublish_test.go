@@ -51,7 +51,7 @@ func TestDocuments(t *testing.T) {
 		"c-p384": ecKey(t, elliptic.P384()).Public(),
 	})
 
-	discovery, jwks, err := Documents("https://oidc.example.com", bundle)
+	discovery, jwks, err := Documents("https://oidc.example.com", "jwks", bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestDocuments(t *testing.T) {
 	}
 
 	// The same bundle gives the same bytes, whatever the map's order.
-	again, jwksAgain, err := Documents("https://oidc.example.com", bundle)
+	again, jwksAgain, err := Documents("https://oidc.example.com", "jwks", bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDocuments(t *testing.T) {
 // the published JWKS alone, as a relying party would.
 func TestDocumentsVerify(t *testing.T) {
 	key := ecKey(t, elliptic.P256())
-	_, jwks, err := Documents("https://oidc.example.com", bundleOf(t, map[string]crypto.PublicKey{"k1": key.Public()}))
+	_, jwks, err := Documents("https://oidc.example.com", "jwks", bundleOf(t, map[string]crypto.PublicKey{"k1": key.Public()}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +125,26 @@ func TestDocumentsVerify(t *testing.T) {
 	}
 }
 
+// TestDocumentsJWKSKey checks that discovery names the JWKS wherever the
+// store holds it.
+func TestDocumentsJWKSKey(t *testing.T) {
+	discovery, _, err := Documents("https://oidc.example.com", "keys", bundleOf(t, map[string]crypto.PublicKey{"k1": ecKey(t, elliptic.P256()).Public()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := json.Unmarshal(discovery, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.JWKSURI != "https://oidc.example.com/keys" {
+		t.Errorf("jwks_uri = %q", doc.JWKSURI)
+	}
+}
+
 func TestDocumentsEmpty(t *testing.T) {
-	if _, _, err := Documents("https://oidc.example.com", jwtbundle.New(td)); err == nil {
+	if _, _, err := Documents("https://oidc.example.com", "jwks", jwtbundle.New(td)); err == nil {
 		t.Error("an empty bundle published")
 	}
 }
@@ -150,7 +168,7 @@ func (s *fakeStore) Put(_ context.Context, key, contentType string, _ []byte) er
 func TestPublisher(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{}
-	p := &Publisher{Issuer: "https://oidc.example.com", Store: store}
+	p := &Publisher{Issuer: "https://oidc.example.com", JWKSKey: "jwks", Store: store}
 
 	// Nothing to refresh before the first bundle.
 	if err := p.Refresh(ctx); err != nil || len(store.puts) != 0 {
@@ -163,7 +181,7 @@ func TestPublisher(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The JWKS before the discovery document that points at it.
-	if want := []string{JWKSKey, DiscoveryKey}; !slices.Equal(store.puts, want) {
+	if want := []string{"jwks", DiscoveryKey}; !slices.Equal(store.puts, want) {
 		t.Errorf("first update wrote %v, want %v", store.puts, want)
 	}
 
@@ -180,7 +198,7 @@ func TestPublisher(t *testing.T) {
 	if err := p.Update(ctx, bundleOf(t, map[string]crypto.PublicKey{"k1": k1, "k2": ecKey(t, elliptic.P256()).Public()})); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{JWKSKey}; !slices.Equal(store.puts, want) {
+	if want := []string{"jwks"}; !slices.Equal(store.puts, want) {
 		t.Errorf("rotation wrote %v, want %v", store.puts, want)
 	}
 
@@ -189,7 +207,7 @@ func TestPublisher(t *testing.T) {
 	if err := p.Refresh(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{JWKSKey, DiscoveryKey}; !slices.Equal(store.puts, want) {
+	if want := []string{"jwks", DiscoveryKey}; !slices.Equal(store.puts, want) {
 		t.Errorf("refresh wrote %v, want %v", store.puts, want)
 	}
 
@@ -205,7 +223,7 @@ func TestPublisher(t *testing.T) {
 	if err := p.Update(ctx, k3); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{JWKSKey}; !slices.Equal(store.puts, want) {
+	if want := []string{"jwks"}; !slices.Equal(store.puts, want) {
 		t.Errorf("retry wrote %v, want %v", store.puts, want)
 	}
 }
