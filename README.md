@@ -10,6 +10,7 @@ to `ghcr.io/pdeslaur/<service>`.
 | [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
 | [oidc-relay](cmd/oidc-relay) | Authenticates an app's OIDC client with its SPIFFE identity instead of a secret. |
 | [smtp-relay](cmd/smtp-relay) | Sends an app's SMTP email through cloudflare-sts, with its SPIFFE identity. |
+| [spiffe-oidc-publisher](cmd/spiffe-oidc-publisher) | Publishes a SPIFFE trust domain's JWT keys as static OIDC discovery documents in a bucket. |
 | [spire-entries](cmd/spire-entries) | Makes a SPIRE server's registration entries match a JSON file. |
 | [spliitforynab](cmd/spliitforynab) | Imports Spliit Cloud group expenses into YNAB. |
 | [tuwunel-svid-sts](cmd/tuwunel-svid-sts) | Exchanges SPIFFE JWT-SVIDs for Matrix access tokens. |
