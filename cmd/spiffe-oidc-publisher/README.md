@@ -25,6 +25,7 @@ Whoever can write the bucket can mint tokens its relying parties accept, so its 
 | `BUCKET` | | The bucket. Required. |
 | `REGION` | `auto` | The bucket's region; R2's is `auto`. |
 | `REFRESH` | `1h` | How often both documents are written again, changed or not. |
+| `CACHE_CONTROL` | `max-age=300` | The documents' `Cache-Control`: how long relying parties may keep keys a rotation replaced. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | | Credentials writing the bucket's objects. |
 | `SPIFFE_ENDPOINT_SOCKET` | | The Workload API, like `unix:///run/spire/agent/api.sock`. |
 

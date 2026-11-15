@@ -41,6 +41,9 @@ type config struct {
 	Bucket   string `env:"BUCKET,required"`
 	// Refresh is how often the documents are written again, changed or not.
 	Refresh time.Duration `env:"REFRESH,default=1h"`
+	// CacheControl is the documents' Cache-Control, which bounds how long
+	// relying parties may keep keys a rotation replaced.
+	CacheControl string `env:"CACHE_CONTROL,default=max-age=300"`
 }
 
 func main() {
@@ -128,8 +131,9 @@ func (w *watcher) OnJWTBundlesWatchError(err error) {
 
 // bucket is an S3 bucket holding the issuer's documents.
 type bucket struct {
-	client *s3.Client
-	name   string
+	client       *s3.Client
+	name         string
+	cacheControl string
 }
 
 func newBucket(ctx context.Context, cfg *config) (*bucket, error) {
@@ -143,15 +147,16 @@ func newBucket(ctx context.Context, cfg *config) (*bucket, error) {
 		// the SDK's defaults.
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	})
-	return &bucket{client: client, name: cfg.Bucket}, nil
+	return &bucket{client: client, name: cfg.Bucket, cacheControl: cfg.CacheControl}, nil
 }
 
 func (b *bucket) Put(ctx context.Context, key, contentType string, body []byte) error {
 	_, err := b.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      &b.name,
-		Key:         &key,
-		Body:        bytes.NewReader(body),
-		ContentType: &contentType,
+		Bucket:       &b.name,
+		Key:          &key,
+		Body:         bytes.NewReader(body),
+		ContentType:  &contentType,
+		CacheControl: &b.cacheControl,
 	})
 	return err
 }
