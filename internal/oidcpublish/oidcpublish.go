@@ -21,18 +21,17 @@ import (
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 )
 
-// The objects' keys in the store, relative to the issuer's URL.
-const (
-	JWKSKey      = "jwks"
-	DiscoveryKey = ".well-known/openid-configuration"
-)
+// DiscoveryKey is the discovery document's key in the store, relative to the
+// issuer's URL, where OIDC places it.
+const DiscoveryKey = ".well-known/openid-configuration"
 
-// Documents returns the issuer's discovery document and JWKS for bundle. Each
+// Documents returns the issuer's discovery document and JWKS for bundle, the
+// discovery document naming the JWKS at <issuer>/<jwksKey>. Each
 // key is marked for signatures and given the algorithm its type implies, as
 // verifiers like GCP's STS require: the bundle's own JWKS, in SPIFFE's format,
 // marks them jwt-svid and names no algorithm. Keys are sorted by ID, so the
 // same bundle always gives the same bytes.
-func Documents(issuer string, bundle *jwtbundle.Bundle) (discovery, jwks []byte, err error) {
+func Documents(issuer, jwksKey string, bundle *jwtbundle.Bundle) (discovery, jwks []byte, err error) {
 	authorities := bundle.JWTAuthorities()
 	if len(authorities) == 0 {
 		return nil, nil, fmt.Errorf("the bundle of %s holds no JWT authority", bundle.TrustDomain())
@@ -52,7 +51,7 @@ func Documents(issuer string, bundle *jwtbundle.Bundle) (discovery, jwks []byte,
 	}
 	discovery, err = json.MarshalIndent(map[string]any{
 		"issuer":                                issuer,
-		"jwks_uri":                              issuer + "/" + JWKSKey,
+		"jwks_uri":                              issuer + "/" + jwksKey,
 		"id_token_signing_alg_values_supported": slices.Sorted(maps.Keys(algs)),
 		"response_types_supported":              []string{"id_token"},
 		"subject_types_supported":               []string{"public"},
@@ -93,7 +92,9 @@ type Store interface {
 // Publisher writes the documents of the latest bundle to Store.
 type Publisher struct {
 	Issuer string
-	Store  Store
+	// JWKSKey is the JWKS's key in the store, relative to the issuer's URL.
+	JWKSKey string
+	Store   Store
 
 	mu      sync.Mutex
 	bundle  *jwtbundle.Bundle
@@ -123,7 +124,7 @@ func (p *Publisher) Refresh(ctx context.Context) error {
 }
 
 func (p *Publisher) publish(ctx context.Context, force bool) error {
-	discovery, jwks, err := Documents(p.Issuer, p.bundle)
+	discovery, jwks, err := Documents(p.Issuer, p.JWKSKey, p.bundle)
 	if err != nil {
 		return err
 	}
@@ -133,7 +134,7 @@ func (p *Publisher) publish(ctx context.Context, force bool) error {
 	for _, doc := range []struct {
 		key  string
 		body []byte
-	}{{JWKSKey, jwks}, {DiscoveryKey, discovery}} {
+	}{{p.JWKSKey, jwks}, {DiscoveryKey, discovery}} {
 		if !force && bytes.Equal(p.written[doc.key], doc.body) {
 			continue
 		}

@@ -6,8 +6,8 @@ Publishes a [SPIFFE](https://spiffe.io) trust domain's JWT keys as an OIDC issue
 
 - **Keys.** It watches the trust domain's JWT bundle through the Workload API, which sends a new one whenever the keys change, such as when the server prepares its next key.
 - **Documents.** For each bundle it writes two objects, `application/json`:
-  - `jwks`: the bundle's JWT keys, each with `use: "sig"` and the `alg` its type implies (`ES256`, `ES384`, `ES512`, `RS256` or `EdDSA`), sorted by key ID. SPIFFE's own bundle format marks them `use: "jwt-svid"` and names no algorithm, which verifiers like GCP's STS reject (`Unable to verify the ID Token signature`).
-  - `.well-known/openid-configuration`: the issuer, `jwks_uri: <issuer>/jwks`, the keys' algorithms, and the `id_token` response and `public` subject types.
+  - `jwks`, or `JWKS_KEY`: the bundle's JWT keys, each with `use: "sig"` and the `alg` its type implies (`ES256`, `ES384`, `ES512`, `RS256` or `EdDSA`), sorted by key ID. SPIFFE's own bundle format marks them `use: "jwt-svid"` and names no algorithm, which verifiers like GCP's STS reject (`Unable to verify the ID Token signature`).
+  - `.well-known/openid-configuration`: the issuer, `jwks_uri` naming the JWKS, the keys' algorithms, and the `id_token` response and `public` subject types.
 - **Order.** The JWKS goes first, so the discovery document never names keys that aren't there yet. Only documents that changed are written; every `REFRESH` both are written again, so an object deleted or overwritten in the bucket comes back.
 - **Failures.** A failed write is logged, and tried again with the next bundle or at the next refresh. The documents in the bucket stay as they were, and relying parties keep verifying with them until the server signs with a key they don't hold: SPIRE prepares each key long before signing with it.
 
@@ -24,6 +24,7 @@ Whoever can write the bucket can mint tokens its relying parties accept, so its 
 | `ENDPOINT` | | The bucket's S3 endpoint, like `https://<account>.r2.cloudflarestorage.com`. Required. |
 | `BUCKET` | | The bucket. Required. |
 | `REGION` | `auto` | The bucket's region; R2's is `auto`. |
+| `JWKS_KEY` | `jwks` | The JWKS's key in the bucket, which discovery's `jwks_uri` names. Relying parties may keep a discovery document for good: GCP's STS does, per issuer, refetching only its `jwks_uri` on an unknown key ID, so an issuer whose discovery once named another object keeps its JWKS there. |
 | `REFRESH` | `1h` | How often both documents are written again, changed or not. |
 | `CACHE_CONTROL` | `max-age=300` | The documents' `Cache-Control`: how long relying parties may keep keys a rotation replaced. |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | | Credentials writing the bucket's objects. |

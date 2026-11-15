@@ -39,6 +39,8 @@ type config struct {
 	Endpoint string `env:"ENDPOINT,required"`
 	Region   string `env:"REGION,default=auto"`
 	Bucket   string `env:"BUCKET,required"`
+	// JWKSKey is the JWKS's key in the bucket, which discovery names.
+	JWKSKey string `env:"JWKS_KEY,default=jwks"`
 	// Refresh is how often the documents are written again, changed or not.
 	Refresh time.Duration `env:"REFRESH,default=1h"`
 	// CacheControl is the documents' Cache-Control, which bounds how long
@@ -65,7 +67,7 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return err
 	}
-	p := &oidcpublish.Publisher{Issuer: strings.TrimSuffix(cfg.Issuer, "/"), Store: store}
+	p := &oidcpublish.Publisher{Issuer: strings.TrimSuffix(cfg.Issuer, "/"), JWKSKey: cfg.JWKSKey, Store: store}
 
 	// The Workload API's address comes from SPIFFE_ENDPOINT_SOCKET.
 	client, err := workloadapi.New(ctx)
