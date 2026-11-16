@@ -1,8 +1,10 @@
 package cloudflarests
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -133,6 +135,53 @@ func TestSendEmail(t *testing.T) {
 	}
 	if want := []string{"<1@example.org>", "<2@example.org>"}; !slices.Equal(ids, want) {
 		t.Errorf("message IDs %q, want %q", ids, want)
+	}
+}
+
+func TestChallenge(t *testing.T) {
+	const (
+		name   = "_acme-challenge.app.example.org"
+		digest = "LoqXcYV8q5ONbJQxbmR7SCTNo3tiAXDfowyjxAjEuX0"
+	)
+	var audience string
+	var methods []string
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.URL.Path != "/acme" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type %q, want application/json", got)
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			t.Errorf("Authorization %q, want a bearer token", r.Header.Get("Authorization"))
+		}
+		if sub := subject(t, token, audience); sub != id {
+			t.Errorf("bearer token for %q, want %q", sub, id)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		want := map[string]string{"profile": id + ":acme", "name": name, "value": digest}
+		if !maps.Equal(body, want) {
+			t.Errorf("body %v, want %v", body, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer broker.Close()
+	audience = broker.URL
+	c, _ := client(t, broker)
+
+	if err := c.PresentChallenge(t.Context(), id+":acme", name, digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CleanUpChallenge(t.Context(), id+":acme", name, digest); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{http.MethodPut, http.MethodDelete}; !slices.Equal(methods, want) {
+		t.Errorf("methods %q, want %q", methods, want)
 	}
 }
 

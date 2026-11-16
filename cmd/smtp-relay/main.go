@@ -17,7 +17,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/emersion/go-smtp"
-	"github.com/pdeslaur/hangar/internal/cloudflarests"
+	"github.com/pdeslaur/hangar/cloudflarests"
 	"github.com/sethvargo/go-envconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )

@@ -18,6 +18,35 @@ to `ghcr.io/pdeslaur/<service>`.
 Each service is a command under `cmd/`, documented in its own README, with its
 packages under `internal/`. They share one Go module.
 
+Two packages are for other modules to import:
+
+| Package | |
+|---|---|
+| [cloudflarests](cloudflarests) | Calls [cloudflare-sts](https://github.com/pdeslaur/cloudflare-sts) with a workload's JWT-SVID: tunnel credentials, email, ACME DNS-01 challenges. |
+| [caddydns](caddydns) | A Caddy DNS provider, `dns.providers.cloudflare_sts`, that answers ACME DNS-01 challenges through cloudflare-sts, so Caddy holds no DNS token. |
+
+Build Caddy with the provider by importing it beside Caddy's standard modules:
+
+```go
+import (
+	caddycmd "github.com/caddyserver/caddy/v2/cmd"
+	_ "github.com/caddyserver/caddy/v2/modules/standard"
+	_ "github.com/pdeslaur/hangar/caddydns"
+)
+```
+
+and point a site's `tls` at it, with `SPIFFE_ENDPOINT_SOCKET` naming the
+Workload API:
+
+```caddyfile
+tls {
+	dns cloudflare_sts {
+		url     https://cloudflare-sts.example.com
+		profile spiffe://example.com/svc/app:acme
+	}
+}
+```
+
 ## Testing
 
 mautrix needs the `goolm` build tag for its olm in Go, so set it for the whole
