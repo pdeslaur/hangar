@@ -1,6 +1,7 @@
 // Package cloudflarests calls cloudflare-sts, the broker in the Cloudflare
 // account that acts for a workload with its JWT-SVID: it hands a tunnel fresh
-// credentials, or sends email from the workload's address.
+// credentials, sends email from the workload's address, or answers the ACME
+// DNS-01 challenges for its names.
 package cloudflarests
 
 import (
@@ -109,7 +110,7 @@ func (c *Client) Tunnel(ctx context.Context, profile string) (TunnelCredentials,
 			TunnelSecret string `json:"tunnel_secret"`
 		} `json:"tunnel"`
 	}
-	err = c.post(ctx, "oauth/token", nil, "", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()), &answer)
+	err = c.call(ctx, http.MethodPost, "oauth/token", nil, "", "application/x-www-form-urlencoded", strings.NewReader(form.Encode()), &answer)
 	if err != nil {
 		return TunnelCredentials{}, err
 	}
@@ -133,10 +134,36 @@ func (c *Client) SendEmail(ctx context.Context, profile, from string, to []strin
 	var answer struct {
 		MessageIDs []string `json:"message_ids"`
 	}
-	if err := c.post(ctx, "email", query, svid, "message/rfc822", message, &answer); err != nil {
+	if err := c.call(ctx, http.MethodPost, "email", query, svid, "message/rfc822", message, &answer); err != nil {
 		return nil, err
 	}
 	return answer.MessageIDs, nil
+}
+
+// PresentChallenge has the broker add the TXT record of an ACME DNS-01
+// challenge, as profile allows: value, the challenge's digest, at name, the
+// record's full name, _acme-challenge.<domain>. Adding one that's there
+// already does nothing.
+func (c *Client) PresentChallenge(ctx context.Context, profile, name, value string) error {
+	return c.challenge(ctx, http.MethodPut, profile, name, value)
+}
+
+// CleanUpChallenge has the broker remove the record PresentChallenge added.
+// Removing one that's gone does nothing.
+func (c *Client) CleanUpChallenge(ctx context.Context, profile, name, value string) error {
+	return c.challenge(ctx, http.MethodDelete, profile, name, value)
+}
+
+func (c *Client) challenge(ctx context.Context, method, profile, name, value string) error {
+	svid, err := c.svid(ctx)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{"profile": profile, "name": name, "value": value})
+	if err != nil {
+		return err
+	}
+	return c.call(ctx, method, "acme", nil, svid, "application/json", bytes.NewReader(body), nil)
 }
 
 func (c *Client) svid(ctx context.Context) (string, error) {
@@ -147,9 +174,10 @@ func (c *Client) svid(ctx context.Context) (string, error) {
 	return svid.Marshal(), nil
 }
 
-// post sends body to path under the broker's URL, with svid as a bearer
-// token unless it's empty, decoding the answer into v.
-func (c *Client) post(ctx context.Context, path string, query url.Values, svid, contentType string, body io.Reader, v any) error {
+// call sends body to path under the broker's URL with method, with svid as
+// a bearer token unless it's empty, decoding the answer into v unless it's
+// nil.
+func (c *Client) call(ctx context.Context, method, path string, query url.Values, svid, contentType string, body io.Reader, v any) error {
 	u, err := url.JoinPath(c.URL, path)
 	if err != nil {
 		return err
@@ -157,7 +185,7 @@ func (c *Client) post(ctx context.Context, path string, query url.Values, svid, 
 	if query != nil {
 		u += "?" + query.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, body)
+	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
 		return err
 	}
@@ -174,12 +202,15 @@ func (c *Client) post(ctx context.Context, path string, query url.Values, svid, 
 	if err != nil {
 		return unavailable{fmt.Errorf("reading cloudflare-sts's response: %w", err)}
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		e := &Error{Status: resp.StatusCode}
 		if json.Unmarshal(b, e) != nil || e.Code == "" {
 			e.Code, e.Description = resp.Status, string(bytes.TrimSpace(b))
 		}
 		return e
+	}
+	if v == nil {
+		return nil
 	}
 	if err := json.Unmarshal(b, v); err != nil {
 		return fmt.Errorf("decoding cloudflare-sts's response: %w", err)
