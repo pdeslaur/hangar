@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/hangar/cloudflarests"
+	"github.com/pdeslaur/hangar/internal/cloudflarests"
 	"github.com/sethvargo/go-envconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )

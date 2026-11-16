@@ -24,7 +24,7 @@ import (
 	"github.com/libdns/libdns"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
-	"github.com/pdeslaur/hangar/cloudflarests"
+	"github.com/pdeslaur/hangar/internal/cloudflarests"
 )
 
 func init() {

@@ -18,14 +18,11 @@ to `ghcr.io/pdeslaur/<service>`.
 Each service is a command under `cmd/`, documented in its own README, with its
 packages under `internal/`. They share one Go module.
 
-Two packages are for other modules to import:
-
-| Package | |
-|---|---|
-| [cloudflarests](cloudflarests) | Calls [cloudflare-sts](https://github.com/pdeslaur/cloudflare-sts) with a workload's JWT-SVID: tunnel credentials, email, ACME DNS-01 challenges. |
-| [caddydns](caddydns) | A Caddy DNS provider, `dns.providers.cloudflare_sts`, that answers ACME DNS-01 challenges through cloudflare-sts, so Caddy holds no DNS token. |
-
-Build Caddy with the provider by importing it beside Caddy's standard modules:
+One package is for other modules to import: [caddydns](caddydns), a Caddy DNS
+provider, `dns.providers.cloudflare_sts`, that answers ACME DNS-01 challenges
+through [cloudflare-sts](https://github.com/pdeslaur/cloudflare-sts) with the
+workload's JWT-SVID, so Caddy holds no DNS token. Build Caddy with it by
+importing it beside Caddy's standard modules:
 
 ```go
 import (
