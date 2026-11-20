@@ -12,13 +12,13 @@ import (
 // MasterSize is the master secret's size.
 const MasterSize = 32
 
-// LoadMaster reads the master secret from path, creating it, readable by its
-// owner only, when it's missing. It refuses a file that isn't MasterSize
-// bytes: every derived secret depends on the master, so it never replaces
-// one.
-func LoadMaster(path string) ([]byte, error) {
+// LoadMaster reads the master secret from path. When it's missing, it
+// creates it, readable by its owner only, if create is set, and fails
+// otherwise. It refuses a file that isn't MasterSize bytes: every derived
+// secret depends on the master, so it never replaces one.
+func LoadMaster(path string, create bool) ([]byte, error) {
 	master, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
+	if errors.Is(err, fs.ErrNotExist) && create {
 		return createMaster(path)
 	}
 	if err != nil {

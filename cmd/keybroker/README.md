@@ -21,7 +21,8 @@ it returns, raw, the secret for the SPIFFE ID in the client's verified certifica
 | Variable | |
 |---|---|
 | `ADDR` | Where it listens; `:8443` by default. |
-| `MASTER_FILE` | The master: 32 bytes. It creates a random one, mode `0600`, when the file is missing, and refuses to start when it holds anything but 32 bytes. |
+| `MASTER_FILE` | The master: 32 bytes. It refuses to start when the file holds anything but 32 bytes. |
+| `MASTER_CREATE` | When the master file is missing, `true`, the default, creates a random one, mode `0600`; `false` refuses to start, for a master another process puts in place, such as one decrypted at boot, whose absence must not mean a new master. |
 
 It tells systemd it's ready, through `NOTIFY_SOCKET`, once it's listening.
 
