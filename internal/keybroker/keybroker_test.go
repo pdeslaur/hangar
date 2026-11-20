@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"math/big"
 	"net"
 	"net/http"
@@ -192,7 +193,7 @@ func TestDeriveRefuses(t *testing.T) {
 
 func TestLoadMaster(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "master")
-	created, err := LoadMaster(path)
+	created, err := LoadMaster(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +207,7 @@ func TestLoadMaster(t *testing.T) {
 	if mode := info.Mode().Perm(); mode != 0o600 {
 		t.Errorf("mode %o, want 600", mode)
 	}
-	loaded, err := LoadMaster(path)
+	loaded, err := LoadMaster(path, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,11 +218,33 @@ func TestLoadMaster(t *testing.T) {
 	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadMaster(path); err == nil {
+	if _, err := LoadMaster(path, true); err == nil {
 		t.Error("loaded a short master")
 	}
 	if got, _ := os.ReadFile(path); string(got) != "short" {
 		t.Error("replaced a short master")
+	}
+}
+
+func TestLoadMasterWithoutCreate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master")
+	if _, err := LoadMaster(path, false); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v, want fs.ErrNotExist", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("created a master")
+	}
+
+	master := bytes.Repeat([]byte{1}, MasterSize)
+	if err := os.WriteFile(path, master, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadMaster(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(master, loaded) {
+		t.Error("loaded a different master")
 	}
 }
 

@@ -26,8 +26,11 @@ import (
 type serveConfig struct {
 	// Addr is where it listens.
 	Addr string `env:"ADDR,default=:8443"`
-	// MasterFile holds the master secret, created when it's missing.
+	// MasterFile holds the master secret.
 	MasterFile string `env:"MASTER_FILE,required"`
+	// MasterCreate creates a random master when MasterFile is missing;
+	// otherwise a missing file stops it.
+	MasterCreate bool `env:"MASTER_CREATE,default=true"`
 }
 
 type fetchConfig struct {
@@ -65,7 +68,7 @@ func main() {
 }
 
 func serve(ctx context.Context, cfg *serveConfig) error {
-	master, err := keybroker.LoadMaster(cfg.MasterFile)
+	master, err := keybroker.LoadMaster(cfg.MasterFile, cfg.MasterCreate)
 	if err != nil {
 		return err
 	}
