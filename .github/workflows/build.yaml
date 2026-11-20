@@ -177,16 +177,14 @@ jobs:
                       fi
                       cosign sign --yes --recursive "$1"
                   }
-                  # Signs the images in parallel, failing if any fails.
-                  pids=()
-                  while read -r image; do
-                      sign "${image}" &
-                      pids+=($!)
-                  done <images.txt
+                  # Signs the images one at a time: cosign processes running
+                  # together race to write the same TUF metadata cache, and the
+                  # losers fail. It goes on past a failure, then fails if any
+                  # did.
                   status=0
-                  for pid in "${pids[@]}"; do
-                      wait "${pid}" || status=1
-                  done
+                  while read -r image; do
+                      sign "${image}" </dev/null || status=1
+                  done <images.txt
                   exit "${status}"
 
             - name: Build only
