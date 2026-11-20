@@ -167,7 +167,12 @@ jobs:
                       --tags latest \
                       --image-label org.opencontainers.image.source=https://github.com/${{ github.repository }} \
                       $(go list ./cmd/...) >images.txt
+                  # Each sign runs in its own process, with its own TUF cache
+                  # in TUF_ROOT: cosigns sharing ~/.sigstore race to write its
+                  # metadata, and one fails with "failed to persist metadata".
                   sign() {
+                      TUF_ROOT=$(mktemp -d)
+                      export TUF_ROOT
                       if cosign verify "$1" \
                               --certificate-identity "${IDENTITY}" \
                               --certificate-oidc-issuer https://token.actions.githubusercontent.com \
