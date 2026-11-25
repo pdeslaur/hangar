@@ -61,7 +61,7 @@ func (f *fake) BatchCreateEntry(_ context.Context, r *entryv1.BatchCreateEntryRe
 
 func (f *fake) BatchUpdateEntry(_ context.Context, r *entryv1.BatchUpdateEntryRequest, _ ...grpc.CallOption) (*entryv1.BatchUpdateEntryResponse, error) {
 	m := r.InputMask
-	if !m.SpiffeId || !m.ParentId || !m.Selectors {
+	if !m.SpiffeId || !m.ParentId || !m.Selectors || !m.DnsNames {
 		return nil, fmt.Errorf("unexpected mask %v", m)
 	}
 	res := &entryv1.BatchUpdateEntryResponse{}
@@ -144,6 +144,37 @@ func TestReconcile(t *testing.T) {
 	}
 }
 
+// DNS names are compared in order, the first being the common name, and an
+// entry without them matches one the server lists without them.
+func TestReconcileDNSNames(t *testing.T) {
+	web := entry("m-web", "/web", "a", "unix:uid:1001")
+	f := server(t, web)
+
+	for _, tc := range []struct {
+		name     string
+		dnsNames []string
+		want     []string
+	}{
+		{"none", nil, nil},
+		{"added", []string{"web.example.org", "www.example.org"}, []string{"update m-web"}},
+		{"same", []string{"web.example.org", "www.example.org"}, nil},
+		{"reordered", []string{"www.example.org", "web.example.org"}, []string{"update m-web"}},
+		{"removed", nil, []string{"update m-web"}},
+	} {
+		f.calls = nil
+		web.DNSNames = tc.dnsNames
+		if _, err := Reconcile(t.Context(), f, "m-", []Entry{web}); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(f.calls, tc.want) {
+			t.Errorf("%s: calls = %q, want %q", tc.name, f.calls, tc.want)
+		}
+		if got := f.entries["m-web"].DnsNames; !slices.Equal(got, tc.dnsNames) {
+			t.Errorf("%s: the server's DNS names = %q, want %q", tc.name, got, tc.dnsNames)
+		}
+	}
+}
+
 func TestReconcileEmptyDeletesOwned(t *testing.T) {
 	f := server(t, entry("m-web", "/web", "a", "unix:uid:1001"), entry("other", "/manual", "a", "unix:uid:1004"))
 	if _, err := Reconcile(t.Context(), f, "m-", nil); err != nil {
@@ -171,7 +202,8 @@ func TestReconcileReportsEachFailure(t *testing.T) {
 
 func TestLoad(t *testing.T) {
 	es, err := Load(strings.NewReader(`[{"id": "m-web", "spiffeID": "spiffe://example.org/web",
-		"parentID": "spiffe://example.org/spire/agent/x509pop/a", "selectors": ["systemd:id:user@1001.service"]}]`), "m-")
+		"parentID": "spiffe://example.org/spire/agent/x509pop/a", "selectors": ["systemd:id:user@1001.service"],
+		"dnsNames": ["web.example.org"]}]`), "m-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +214,9 @@ func TestLoad(t *testing.T) {
 	if s := a.Selectors[0]; s.Type != "systemd" || s.Value != "id:user@1001.service" {
 		t.Errorf("selector = %v, want type systemd, value id:user@1001.service", s)
 	}
+	if got := a.DnsNames; !slices.Equal(got, []string{"web.example.org"}) {
+		t.Errorf("DNS names = %q, want web.example.org", got)
+	}
 
 	for name, tc := range map[string]struct{ json, err string }{
 		"prefix":   {`[{"id": "web", "spiffeID": "spiffe://example.org/web", "parentID": "spiffe://example.org/a", "selectors": ["unix:uid:1"]}]`, "must start with"},
@@ -191,6 +226,7 @@ func TestLoad(t *testing.T) {
 		"parentID": {`[{"id": "m-web", "spiffeID": "spiffe://example.org/web", "parentID": "", "selectors": ["unix:uid:1"]}]`, "parentID"},
 		"selector": {`[{"id": "m-web", "spiffeID": "spiffe://example.org/web", "parentID": "spiffe://example.org/a", "selectors": ["uid"]}]`, "isn't type:value"},
 		"none":     {`[{"id": "m-web", "spiffeID": "spiffe://example.org/web", "parentID": "spiffe://example.org/a", "selectors": []}]`, "no selectors"},
+		"dnsName":  {`[{"id": "m-web", "spiffeID": "spiffe://example.org/web", "parentID": "spiffe://example.org/a", "selectors": ["unix:uid:1"], "dnsNames": [""]}]`, "empty DNS name"},
 		"unknown":  {`[{"id": "m-web", "ttl": 60}]`, "unknown field"},
 	} {
 		t.Run(name, func(t *testing.T) {

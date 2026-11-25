@@ -5,7 +5,7 @@ Makes a [SPIRE](https://spiffe.io/docs/latest/spire-about/) server's registratio
 It talks to the server's admin API over its unix socket and:
 
 - creates the entries the file declares that the server lacks;
-- updates those whose SPIFFE ID, parent ID or selectors differ;
+- updates those whose SPIFFE ID, parent ID, selectors or DNS names differ;
 - deletes the entries it owns that the file no longer declares.
 
 It owns the entries whose IDs start with `ID_PREFIX`, and every entry in the file must have one. Entries without the prefix, such as ones created by hand, are left alone.
@@ -20,12 +20,13 @@ A JSON array:
         "id": "managed-web",
         "spiffeID": "spiffe://example.org/web",
         "parentID": "spiffe://example.org/spire/agent/x509pop/host1",
-        "selectors": ["systemd:id:user@1001.service"]
+        "selectors": ["systemd:id:user@1001.service"],
+        "dnsNames": ["web.example.org"]
     }
 ]
 ```
 
-Selectors are `type:value`, split at the first colon, so the above is the `systemd` selector `id:user@1001.service`. Other entry fields keep the server's defaults.
+Selectors are `type:value`, split at the first colon, so the above is the `systemd` selector `id:user@1001.service`. `dnsNames`, optional, are the X.509-SVID's DNS SANs, for clients that check a server's name against its certificate rather than its SPIFFE ID; the first is also the certificate's common name, so their order matters. Other entry fields keep the server's defaults.
 
 ## Configuration
 

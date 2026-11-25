@@ -30,6 +30,9 @@ type Entry struct {
 	// Selectors are "type:value", e.g. "unix:uid:1000"; a workload must match
 	// them all.
 	Selectors []string `json:"selectors"`
+	// DNSNames are the X.509-SVID's DNS SANs, for a client checking the
+	// server's name; the first is also its subject's common name. Optional.
+	DNSNames []string `json:"dnsNames,omitempty"`
 }
 
 // Load reads a JSON array of entries and checks that each is well formed,
@@ -78,7 +81,10 @@ func (e Entry) toAPI() (*types.Entry, error) {
 		}
 		ss = append(ss, &types.Selector{Type: typ, Value: value})
 	}
-	return &types.Entry{Id: e.ID, SpiffeId: id, ParentId: parent, Selectors: ss}, nil
+	if slices.Contains(e.DNSNames, "") {
+		return nil, errors.New("empty DNS name")
+	}
+	return &types.Entry{Id: e.ID, SpiffeId: id, ParentId: parent, Selectors: ss, DnsNames: e.DNSNames}, nil
 }
 
 func parseID(s string) (*types.SPIFFEID, error) {
@@ -141,7 +147,7 @@ func Reconcile(ctx context.Context, c entryv1.EntryClient, prefix string, want [
 	if len(update) > 0 {
 		r, err := c.BatchUpdateEntry(ctx, &entryv1.BatchUpdateEntryRequest{
 			Entries:   update,
-			InputMask: &types.EntryMask{SpiffeId: true, ParentId: true, Selectors: true},
+			InputMask: &types.EntryMask{SpiffeId: true, ParentId: true, Selectors: true, DnsNames: true},
 		})
 		if err != nil {
 			return res, errors.Join(append(errs, fmt.Errorf("updating entries: %w", err))...)
@@ -166,7 +172,7 @@ func Reconcile(ctx context.Context, c entryv1.EntryClient, prefix string, want [
 func list(ctx context.Context, c entryv1.EntryClient, prefix string) (map[string]*types.Entry, error) {
 	have := map[string]*types.Entry{}
 	req := &entryv1.ListEntriesRequest{
-		OutputMask: &types.EntryMask{SpiffeId: true, ParentId: true, Selectors: true},
+		OutputMask: &types.EntryMask{SpiffeId: true, ParentId: true, Selectors: true, DnsNames: true},
 	}
 	for {
 		r, err := c.ListEntries(ctx, req)
@@ -193,11 +199,11 @@ func collect(done []string, errs []error, verb, id string, s *types.Status) ([]s
 	return append(done, id), errs
 }
 
-// equal reports whether a and b have the same SPIFFE ID, parent and
-// selectors, in any order.
+// equal reports whether a and b have the same SPIFFE ID, parent, selectors,
+// in any order, and DNS names, in order: the first is the common name.
 func equal(a, b *types.Entry) bool {
 	return sameID(a.SpiffeId, b.SpiffeId) && sameID(a.ParentId, b.ParentId) &&
-		slices.Equal(selectors(a), selectors(b))
+		slices.Equal(selectors(a), selectors(b)) && slices.Equal(a.DnsNames, b.DnsNames)
 }
 
 func sameID(a, b *types.SPIFFEID) bool {
