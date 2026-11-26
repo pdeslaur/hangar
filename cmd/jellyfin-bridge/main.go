@@ -7,6 +7,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
@@ -28,10 +30,9 @@ type config struct {
 	Addr string `env:"ADDR,default=127.0.0.1:8097"`
 	// JellyfinURL is Jellyfin's, which nothing else should reach.
 	JellyfinURL string `env:"JELLYFIN_URL,default=http://127.0.0.1:8096"`
-	// JellyfinDB is Jellyfin's database, where it writes its API key.
+	// JellyfinDB is Jellyfin's database, where it writes its API key, a
+	// random one each time it starts.
 	JellyfinDB string `env:"JELLYFIN_DB,required"`
-	// APIKey is its API key's token, which it writes into JellyfinDB.
-	APIKey string `env:"API_KEY,required"`
 	// APIKeyName is its API key's name in Jellyfin.
 	APIKeyName string `env:"API_KEY_NAME,default=jellyfin-bridge"`
 	// State is its own database, of sessions.
@@ -86,15 +87,19 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return err
 	}
+	// A key of its own, replacing the one it wrote before: it never leaves
+	// the bridge, and sessions don't depend on it.
+	key := make([]byte, 16)
+	rand.Read(key)
 	client := &jellyfin.Client{
 		URL:  cfg.JellyfinURL,
-		Key:  cfg.APIKey,
+		Key:  hex.EncodeToString(key),
 		HTTP: &http.Client{Timeout: 30 * time.Second},
 	}
 	if err := waitForJellyfin(ctx, client); err != nil {
 		return err
 	}
-	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, cfg.APIKey); err != nil {
+	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key); err != nil {
 		return err
 	}
 	serverID, err := client.ServerID(ctx)

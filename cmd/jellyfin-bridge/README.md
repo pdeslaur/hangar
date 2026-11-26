@@ -19,7 +19,7 @@ The bridge does no OIDC itself: the reverse proxy signs users in and tells the b
 
 1. **The identity provider.** Register an OIDC client for the reverse proxy, its redirect URI under `/sso/` (`/sso/callback` below), and limit it to the users allowed Jellyfin, like a group: without `USERS`, whoever signs in gets the Jellyfin user of the same name.
 2. **Jellyfin.** Make the users, with the identity provider's usernames, or map them with `USERS`. Enable Quick Connect in the dashboard's general settings. Have it listen on loopback alone, under Networking, so only the bridge, in the same pod or network namespace, reaches it, and publish no port of its own.
-3. **The bridge.** Run it beside Jellyfin, with Jellyfin's `/config` mounted for `JELLYFIN_DB`, a volume for `STATE`, and a random `API_KEY`.
+3. **The bridge.** Run it beside Jellyfin, with Jellyfin's `/config` mounted for `JELLYFIN_DB`, and a volume for `STATE`.
 4. **The reverse proxy.** Send everything to the bridge. On `/sso/*`, sign users in and set `USER_HEADER` to their username. Everywhere, remove a client's own `USER_HEADER`. With Caddy and [caddy-pocketid](https://github.com/pdeslaur/caddy-pocketid):
 
    ```caddyfile
@@ -52,7 +52,7 @@ The bridge does no OIDC itself: the reverse proxy signs users in and tells the b
 - **Apps.** Their tokens last until revoked. An app with Quick Connect uses Jellyfin's own, its code approved on the account page or in jellyfin-web; the bridge replaces the Jellyfin token in the result with its own. An app asking for a password, like Infuse, takes a one-time code from the account page as the password: the bridge answers `POST /Users/AuthenticateByName` itself, so Jellyfin's passwords never work through it. A code lasts 10 minutes, works once, and is voided after 5 wrong guesses. The obsolete `POST /Users/{id}/Authenticate` and the password resets are refused.
 - **The account page.** `/sso/` approves Quick Connect codes, gives one-time codes, and lists the user's sessions, each with a button ending it.
 - **Ending sessions.** A session unused for `IDLE` ends: every `SWEEP_EVERY`, the bridge logs its Jellyfin token out and deletes it. Logging out with the token ends it alone, where deleting its device would end every user's tokens on the same device ID, as on a shared browser.
-- **Its API key.** At start, it waits for Jellyfin, then writes `API_KEY` into Jellyfin's database as the API key `API_KEY_NAME`, which Jellyfin reads on each request. It refuses to if the `ApiKeys` table's columns aren't the ones it knows. It writes nothing else there: Jellyfin keeps its devices in memory.
+- **Its API key.** At start, it waits for Jellyfin, then writes a random token into Jellyfin's database as the API key `API_KEY_NAME`, replacing the one it wrote before, which Jellyfin reads on each request. The token never leaves the bridge, and its sessions don't depend on it: their Jellyfin tokens are devices'. It refuses to if the `ApiKeys` table's columns aren't the ones it knows. It writes nothing else there: Jellyfin keeps its devices in memory.
 
 ## Trust
 
@@ -65,7 +65,6 @@ With `USERS`, only the users it maps sign in, as the Jellyfin users it names. Wi
 | Variable | Default | |
 |---|---|---|
 | `JELLYFIN_DB` | | Jellyfin's database, like `/config/data/data/jellyfin.db`. Required. |
-| `API_KEY` | | Its API key's token. Required. |
 | `STATE` | | Its own database, of sessions. Required. |
 | `ADDR` | `127.0.0.1:8097` | Where it listens: the reverse proxy's upstream. |
 | `JELLYFIN_URL` | `http://127.0.0.1:8096` | Jellyfin. |
