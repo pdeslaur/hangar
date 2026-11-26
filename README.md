@@ -47,6 +47,13 @@ tls {
 
 ## Testing
 
+jellyfin-bridge embeds its pages, built with Node, so build them first (see
+[Pages](cmd/jellyfin-bridge/README.md#pages)):
+
+```sh
+go generate ./internal/jellybridge/web
+```
+
 mautrix needs the `goolm` build tag for its olm in Go, so set it for the whole
 module:
 
@@ -68,9 +75,8 @@ GOFLAGS=-tags=goolm \
 CI runs the tests with the race detector and against tuwunel and Jellyfin,
 and checks that the code is formatted with `gofmt`, that `go.mod` is tidy,
 and that `go vet`, [staticcheck](https://staticcheck.dev) and
-[govulncheck](https://go.dev/doc/security/vuln/) find nothing. It also
-rebuilds jellyfin-bridge's pages and checks that the committed build matches
-(see [Pages](cmd/jellyfin-bridge/README.md#pages)).
+[govulncheck](https://go.dev/doc/security/vuln/) find nothing. It builds
+jellyfin-bridge's pages first, for the jobs compiling Go.
 
 ## Images
 

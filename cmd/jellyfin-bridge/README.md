@@ -39,15 +39,13 @@ Jellyfin needs Quick Connect enabled, in its dashboard's general settings. It te
 
 ## Pages
 
-The pages under `/sso/` are written with [Solid](https://www.solidjs.com) 2 in [`internal/jellybridge/web`](../../internal/jellybridge/web) and built with Vite into its `dist` directory, which the bridge embeds. `dist` is committed, so building the bridge needs no Node; after changing the pages, rebuild it and commit it with them:
+The pages under `/sso/` are written with [Solid](https://www.solidjs.com) 2 in [`internal/jellybridge/web`](../../internal/jellybridge/web) and built with Vite into its `dist` directory, which the bridge embeds. `dist` isn't committed: building the bridge, or anything compiling its packages, needs Node and the pages built first, after every change to them:
 
 ```sh
-cd internal/jellybridge/web
-npm ci
-npm run build
+go generate ./internal/jellybridge/web
 ```
 
-CI fails when `dist` isn't what its sources build. `public/bridge.js`, the script the proxy adds to jellyfin-web, is plain JavaScript copied as is: it runs in jellyfin-web's page, beside its own code.
+That runs `npm ci` and `npm run build`. CI builds them once and hands them to every job compiling Go. `public/bridge.js`, the script the proxy adds to jellyfin-web, is plain JavaScript copied as is: it runs in jellyfin-web's page, beside its own code.
 
 ## Image
 

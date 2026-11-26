@@ -16,7 +16,7 @@ updates:
           actions:
               patterns: ["*"]
 
-    # jellyfin-bridge's pages: an update needs dist rebuilt and committed.
+    # jellyfin-bridge's pages.
     - package-ecosystem: npm
       directory: /internal/jellybridge/web
       schedule:
