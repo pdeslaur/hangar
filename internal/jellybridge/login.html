@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Jellyfin</title>
+<style>
+body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: grid; place-items: center; }
+</style>
+</head>
+<body>
+<p id="status">Signing in…</p>
+<script>
+// Signs jellyfin-web in with a bridge token: it names this browser by
+// jellyfin-web's own device ID, asks the bridge for a session, and stores it
+// where jellyfin-web reads its credentials.
+(async () => {
+	const status = document.getElementById("status");
+	try {
+		// jellyfin-web's device ID, made as it makes it when it has none.
+		let deviceId = localStorage.getItem("_deviceId2");
+		if (!deviceId) {
+			deviceId = btoa([navigator.userAgent, Date.now()].join("|")).replaceAll("=", "1");
+			localStorage.setItem("_deviceId2", deviceId);
+		}
+		const resp = await fetch("session", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ DeviceId: deviceId }),
+		});
+		if (!resp.ok) {
+			status.textContent = "Signing in failed: " + (await resp.text());
+			return;
+		}
+		const session = await resp.json();
+		const credentials = JSON.parse(localStorage.getItem("jellyfin_credentials") || "{}");
+		const servers = (credentials.Servers || []).filter((s) => s.Id !== session.ServerId);
+		servers.unshift({
+			Id: session.ServerId,
+			AccessToken: session.AccessToken,
+			UserId: session.UserId,
+			ManualAddress: location.origin,
+			LastConnectionMode: 2,
+			DateLastAccessed: Date.now(),
+		});
+		credentials.Servers = servers;
+		localStorage.setItem("jellyfin_credentials", JSON.stringify(credentials));
+		location.replace("/web/");
+	} catch (e) {
+		status.textContent = "Signing in failed: " + e;
+	}
+})();
+</script>
+</body>
+</html>

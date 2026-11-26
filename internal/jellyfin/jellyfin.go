@@ -107,6 +107,26 @@ func (c *Client) UserID(ctx context.Context, name string) (string, error) {
 	return "", fmt.Errorf("jellyfin: no user %q", name)
 }
 
+// Ready returns nil once Jellyfin has started. While it starts, a setup
+// server answers /System/Info/Public and 503 to everything else.
+func (c *Client) Ready(ctx context.Context) error {
+	return c.do(ctx, http.MethodGet, "/Branding/Configuration", "", nil, nil)
+}
+
+// ServerID returns the server's ID, which clients' credentials name.
+func (c *Client) ServerID(ctx context.Context) (string, error) {
+	var info struct {
+		ID string `json:"Id"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/System/Info/Public", "", nil, &info); err != nil {
+		return "", err
+	}
+	if info.ID == "" {
+		return "", errors.New("jellyfin: no server ID")
+	}
+	return info.ID, nil
+}
+
 // Login logs device in as the user userID with Quick Connect, which has to be
 // enabled, and returns its access token. It ends the tokens the same user
 // had on the same device ID.
@@ -175,7 +195,9 @@ func (c *Client) do(ctx context.Context, method, path, authorization string, in,
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", authorization)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
 	req.Header.Set("Accept", "application/json")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")

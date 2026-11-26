@@ -177,6 +177,21 @@ func (s *Store) Lookup(ctx context.Context, token string) (Session, error) {
 	return session, err
 }
 
+// FindSession returns the live session of kind for the Jellyfin user
+// userID on the device deviceID, and errNoSession if there's none.
+func (s *Store) FindSession(ctx context.Context, kind Kind, userID, deviceID string) (Session, error) {
+	session, err := scanSession(s.db.QueryRowContext(ctx, `
+		SELECT `+sessionColumns+`
+		FROM sessions s
+		WHERE s.kind = ? AND s.user_id = ? AND s.device_id = ? AND s.last_used > ?
+		ORDER BY s.last_used DESC LIMIT 1`,
+		kind, userID, deviceID, s.now().Add(-s.Idle).Unix()))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Session{}, errNoSession
+	}
+	return session, err
+}
+
 // Touch records that the session id is in use, writing it at most every
 // touchEvery.
 func (s *Store) Touch(ctx context.Context, id string) error {
