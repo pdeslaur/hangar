@@ -5,6 +5,7 @@ package jellybridge
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -83,6 +84,8 @@ const (
 	// quickConnectLogin is Jellyfin's Quick Connect login, whose result
 	// Apps adopts.
 	quickConnectLogin
+	// logout is Jellyfin's logout, which ends the bridge session.
+	logout
 	// refused never reaches Jellyfin.
 	refused
 )
@@ -101,16 +104,23 @@ func routeOf(r *http.Request) route {
 		return passwordLogin
 	case path == "/users/authenticatewithquickconnect":
 		return quickConnectLogin
+	case path == "/sessions/logout":
+		return logout
 	case path == "/users/forgotpassword", path == "/users/forgotpassword/pin", userAuthenticate.MatchString(path):
 		return refused
 	}
 	return forward
 }
 
+// sessionKey is the context key of the session a request to Jellyfin
+// carries the token of.
+type sessionKey struct{}
+
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	r = r.Clone(ctx)
-	switch routeOf(r) {
+	rt := routeOf(r)
+	switch rt {
 	case webPage:
 		// Whole and uncompressed, for addScript to change: a browser may hold
 		// a copy from before the bridge, which Jellyfin would let it keep.
@@ -144,7 +154,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if c.device.Version != "" {
 			device.Version = c.device.Version
 		}
+		if rt == logout {
+			p.serveLogout(w, r, session)
+			return
+		}
 		r.Header.Set("Authorization", device.Header(session.JellyfinToken))
+		r = r.WithContext(context.WithValue(ctx, sessionKey{}, session))
 	case errors.Is(err, errNoSession):
 		// Anonymous, still naming its device: Quick Connect needs it.
 		if c.device != (jellyfin.Device{}) {
@@ -208,6 +223,9 @@ const maxLoginResponse = 1 << 20
 
 // modifyResponse changes Jellyfin's responses on the routes that need it.
 func (p *Proxy) modifyResponse(resp *http.Response) error {
+	if session, ok := resp.Request.Context().Value(sessionKey{}).(Session); ok && resp.StatusCode == http.StatusUnauthorized {
+		p.checkSession(resp.Request.Context(), session)
+	}
 	switch routeOf(resp.Request) {
 	case webPage:
 		return addScript(resp)
@@ -245,4 +263,36 @@ func (p *Proxy) adoptLogin(resp *http.Response) error {
 	resp.Header.Set("Content-Length", fmt.Sprint(len(out)))
 	resp.Header.Set("Cache-Control", "no-store")
 	return nil
+}
+
+// serveLogout answers Jellyfin's logout, with a bridge token, by ending its
+// session: forwarded, it would end the session's Jellyfin token and leave
+// the session holding it.
+func (p *Proxy) serveLogout(w http.ResponseWriter, r *http.Request, session Session) {
+	ctx := r.Context()
+	if err := EndSession(ctx, p.sessions, p.apps.Jellyfin, session); err != nil {
+		clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
+		http.Error(w, "ending the session failed", http.StatusBadGateway)
+		return
+	}
+	clog.InfoContext(ctx, "logged out", "session", session.ID, "username", session.Username,
+		"client", session.Device.Client, "device", session.Device.Name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkSession deletes session if Jellyfin no longer takes its token, which
+// Jellyfin answering 401 to a request with it suggests: an administrator
+// deleted its device, say. Its client then signs in again, rather than
+// holding a bridge token that works nowhere.
+func (p *Proxy) checkSession(ctx context.Context, session Session) {
+	valid, err := p.apps.Jellyfin.Valid(ctx, session.JellyfinToken)
+	if err != nil || valid {
+		return
+	}
+	if err := p.sessions.DeleteSession(ctx, session.ID); err != nil {
+		clog.WarnContext(ctx, "deleting a session Jellyfin no longer takes", "session", session.ID, "error", err)
+		return
+	}
+	clog.WarnContext(ctx, "deleted a session Jellyfin no longer takes", "session", session.ID,
+		"username", session.Username, "client", session.Device.Client, "device", session.Device.Name)
 }

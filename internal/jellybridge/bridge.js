@@ -53,6 +53,14 @@
 		return;
 	}
 
+	// A token that expired while the page was closed, or the computer
+	// asleep: sign in again before jellyfin-web starts with it.
+	const storedExpires = Number(localStorage.getItem(expiresKey));
+	if (storedExpires && storedExpires - Date.now() < 10 * 1000) {
+		location.replace(loginPage);
+		return;
+	}
+
 	let leaving = false;
 	function onRoute() {
 		if (!leaving && /^#\/(login|selectserver)\b/.test(location.hash)) {

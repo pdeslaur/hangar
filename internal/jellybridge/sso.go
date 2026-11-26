@@ -335,14 +335,9 @@ func (s *SSO) serveRevoke(w http.ResponseWriter, r *http.Request, u user) {
 		if session.ID != req.ID {
 			continue
 		}
-		if err := s.Jellyfin.Logout(ctx, session.JellyfinToken); err != nil {
-			clog.ErrorContext(ctx, "logging a session out", "session", session.ID, "error", err)
-			http.Error(w, "Jellyfin unavailable", http.StatusBadGateway)
-			return
-		}
-		if err := s.Sessions.DeleteSession(ctx, session.ID); err != nil {
-			clog.ErrorContext(ctx, "deleting a session", "session", session.ID, "error", err)
-			http.Error(w, "deleting the session failed", http.StatusInternalServerError)
+		if err := EndSession(ctx, s.Sessions, s.Jellyfin, session); err != nil {
+			clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
+			http.Error(w, "ending the session failed", http.StatusBadGateway)
 			return
 		}
 		clog.InfoContext(ctx, "revoked a session", "user", u.name, "session", session.ID,

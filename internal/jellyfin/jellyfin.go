@@ -205,6 +205,15 @@ func (c *Client) AuthorizeQuickConnect(ctx context.Context, code, userID string)
 	return c.do(ctx, http.MethodPost, path, c.keyHeader(), nil, nil)
 }
 
+// Valid reports whether Jellyfin takes token.
+func (c *Client) Valid(ctx context.Context, token string) (bool, error) {
+	err := c.do(ctx, http.MethodGet, "/Users/Me", tokenHeader(token), nil, nil)
+	if se := (*StatusError)(nil); errors.As(err, &se) && se.Status == http.StatusUnauthorized {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Logout ends token, logging out with it. A token already ended is no error.
 //
 // It ends that token alone, where deleting its device through the API would

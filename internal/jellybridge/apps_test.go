@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -207,7 +208,7 @@ func TestAppsJellyfin(t *testing.T) {
 		t.Errorf("POST /sso/quickconnect with no such code: %d", w.Code)
 	}
 	// Signing the same TV in again ends its first session.
-	quickConnect()
+	second := quickConnect()
 	if status, _ := jellyfintest.Me(t, proxy.URL, first); status != http.StatusUnauthorized {
 		t.Errorf("/Users/Me with the TV's first token: %d", status)
 	}
@@ -257,4 +258,37 @@ func TestAppsJellyfin(t *testing.T) {
 	if w := sso(t, pages, http.MethodPost, "/sso/revoke", map[string]string{"ID": infuseID}); w.Code != http.StatusNotFound {
 		t.Errorf("POST /sso/revoke again: %d", w.Code)
 	}
+
+	// Signing out through the bridge ends the bridge session, not just
+	// Jellyfin's token.
+	if status, body := call(t, http.MethodPost, proxy.URL+"/Sessions/Logout", tv.Header(second), nil); status != http.StatusNoContent {
+		t.Fatalf("POST /Sessions/Logout: %d %s", status, body)
+	}
+	if _, err := store.Lookup(ctx, second); err == nil {
+		t.Error("the TV's session outlived its logout")
+	}
+
+	// A device deleted in Jellyfin: the next request finds its token dead,
+	// and the bridge drops its session.
+	third := quickConnect()
+	if err := call2xx(t, http.MethodDelete, s.URL+"/Devices?id="+tv.ID, jellyfintest.Key); err != "" {
+		t.Fatalf("deleting the TV in Jellyfin: %s", err)
+	}
+	if status, _ := jellyfintest.Me(t, proxy.URL, third); status != http.StatusUnauthorized {
+		t.Errorf("/Users/Me after deleting the TV: %d", status)
+	}
+	if _, err := store.Lookup(ctx, third); err == nil {
+		t.Error("the TV's session outlived its device")
+	}
+}
+
+// call2xx sends a request with Jellyfin's token or key, returning what went
+// wrong, if it didn't answer 2xx.
+func call2xx(t *testing.T, method, url, token string) string {
+	t.Helper()
+	status, body := call(t, method, url, `MediaBrowser Token="`+token+`"`, nil)
+	if status < 200 || status > 299 {
+		return fmt.Sprintf("%d %s", status, body)
+	}
+	return ""
 }
