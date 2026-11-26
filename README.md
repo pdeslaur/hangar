@@ -54,15 +54,19 @@ GOFLAGS=-tags=goolm go test ./...
 ```
 
 Tests that need a real [tuwunel](https://github.com/matrix-construct/tuwunel)
-run with docker when `TUWUNEL_IMAGE` names an image:
+or [Jellyfin](https://jellyfin.org) run with docker when `TUWUNEL_IMAGE` or
+`JELLYFIN_IMAGE`, a linuxserver.io Jellyfin image, names one:
 
 ```sh
-GOFLAGS=-tags=goolm TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
+GOFLAGS=-tags=goolm \
+    TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest \
+    JELLYFIN_IMAGE=lscr.io/linuxserver/jellyfin:latest \
+    go test ./...
 ```
 
-CI runs the tests with the race detector and against tuwunel, and checks
-that the code is formatted with `gofmt`, that `go.mod` is tidy, and that
-`go vet`, [staticcheck](https://staticcheck.dev) and
+CI runs the tests with the race detector and against tuwunel and Jellyfin,
+and checks that the code is formatted with `gofmt`, that `go.mod` is tidy,
+and that `go vet`, [staticcheck](https://staticcheck.dev) and
 [govulncheck](https://go.dev/doc/security/vuln/) find nothing.
 
 ## Images
