@@ -68,8 +68,14 @@ func TestLoginRefuses(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/sso/login", nil)
 	w := httptest.NewRecorder()
 	l.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfin_credentials") {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfinBridge.signIn") {
 		t.Errorf("GET /sso/login: %d", w.Code)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/sso/bridge.js", nil)
+	w = httptest.NewRecorder()
+	l.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfin_credentials") {
+		t.Errorf("GET /sso/bridge.js: %d", w.Code)
 	}
 }
 

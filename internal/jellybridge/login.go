@@ -17,6 +17,9 @@ import (
 //go:embed login.html
 var loginPage []byte
 
+//go:embed bridge.js
+var bridgeScript []byte
+
 // maxSessionRequest bounds the body of a session request.
 const maxSessionRequest = 4 << 10
 
@@ -33,9 +36,12 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 //
 //   - GET /sso/login, a page that asks for a session for jellyfin-web's
 //     device ID and stores its token where jellyfin-web reads it.
+//   - GET /sso/bridge.js, the script signing jellyfin-web in and keeping
+//     it signed in, which the Proxy adds to jellyfin-web.
 //   - POST /sso/session, taking {"DeviceId": …} and answering a bridge
 //     token for the user's session on that device, made if it has none:
-//     {"AccessToken", "UserId", "ServerId"}. Asking again refreshes it.
+//     {"AccessToken", "UserId", "ServerId", "ExpiresIn"}. Asking again
+//     refreshes it.
 //
 // Only the single sign-on may reach these paths, and it has to set
 // UserHeader on every request to them, removing a client's own.
@@ -68,6 +74,15 @@ func (l *Login) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Write(loginPage)
+	case "/sso/bridge.js":
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(bridgeScript)
 	case "/sso/session":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
@@ -91,6 +106,8 @@ type sessionResponse struct {
 	AccessToken string
 	UserID      string `json:"UserId"`
 	ServerID    string `json:"ServerId"`
+	// ExpiresIn is how many seconds the token lasts.
+	ExpiresIn int64
 }
 
 func (l *Login) serveSession(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +160,12 @@ func (l *Login) serveSession(w http.ResponseWriter, r *http.Request) {
 	clog.InfoContext(ctx, "signed in", "user", user, "username", username, "session", session.ID)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(sessionResponse{AccessToken: token, UserID: userID, ServerID: l.ServerID})
+	json.NewEncoder(w).Encode(sessionResponse{
+		AccessToken: token,
+		UserID:      userID,
+		ServerID:    l.ServerID,
+		ExpiresIn:   int64(l.BrowserTTL / time.Second),
+	})
 }
 
 // browserSession returns the user's session on the browser deviceID,

@@ -1,11 +1,15 @@
 package jellybridge
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +116,74 @@ func TestProxy(t *testing.T) {
 			tc.want.ForwardedFor = "203.0.113.7"
 			if got != tc.want {
 				t.Errorf("Jellyfin received %+v\nwant %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProxyAddsScript(t *testing.T) {
+	const page = `<!DOCTYPE html><html><head><title>Jellyfin</title></head><body></body></html>`
+	const headless = `<html><body></body></html>`
+	// Like Jellyfin, it compresses what it can.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Etag", `"abc"`)
+		w.Header().Set("Content-Type", "text/html")
+		body := page
+		if r.URL.Query().Has("headless") {
+			body = headless
+		}
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			io.WriteString(w, body)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		io.WriteString(gz, body)
+		gz.Close()
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	s, _ := openStore(t)
+	p := NewProxy(target, s, nil)
+
+	withScript := `<!DOCTYPE html><html><head><title>Jellyfin</title>` + scriptTag + `</head><body></body></html>`
+	for _, tc := range []struct {
+		path, want string
+		changed    bool
+		encoding   string
+	}{
+		{"/web/", withScript, true, ""},
+		{"/web/index.html", withScript, true, ""},
+		{"/web/index.html?headless", headless, false, ""},
+		// Anything else passes as it came, compressed.
+		{"/web/other.html", page, false, "gzip"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			r.Header.Set("Accept-Encoding", "gzip")
+			w := httptest.NewRecorder()
+			p.ServeHTTP(w, r)
+			resp := w.Result()
+			if got := resp.Header.Get("Content-Encoding"); got != tc.encoding {
+				t.Fatalf("Content-Encoding %q, want %q", got, tc.encoding)
+			}
+			var body io.Reader = resp.Body
+			if tc.encoding == "gzip" {
+				gz, err := gzip.NewReader(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = gz
+			}
+			b, _ := io.ReadAll(body)
+			if string(b) != tc.want {
+				t.Errorf("body %s, want %s", b, tc.want)
+			}
+			if got := resp.Header.Get("Content-Length"); tc.changed && got != fmt.Sprint(len(tc.want)) {
+				t.Errorf("Content-Length %s, want %d", got, len(tc.want))
+			}
+			if etag := resp.Header.Get("Etag"); (etag == "") != tc.changed {
+				t.Errorf("Etag %q, changed %v", etag, tc.changed)
 			}
 		})
 	}

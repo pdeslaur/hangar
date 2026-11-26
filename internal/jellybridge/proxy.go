@@ -4,10 +4,14 @@
 package jellybridge
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
@@ -26,6 +30,8 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // the bridge, an unknown or an expired one, reaches Jellyfin as no token at
 // all. Jellyfin gets the device's ID from the session, and the rest of the
 // device's description from the client when it gives one.
+//
+// It adds the bridge's script, /sso/bridge.js, to jellyfin-web's page.
 type Proxy struct {
 	sessions *Store
 	proxy    *httputil.ReverseProxy
@@ -47,7 +53,8 @@ func NewProxy(target *url.URL, sessions *Store, transport http.RoundTripper) *Pr
 					}
 				}
 			},
-			Transport: transport,
+			ModifyResponse: addScript,
+			Transport:      transport,
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				clog.WarnContext(r.Context(), "forwarding to jellyfin", "error", err)
 				w.WriteHeader(http.StatusBadGateway)
@@ -59,6 +66,10 @@ func NewProxy(target *url.URL, sessions *Store, transport http.RoundTripper) *Pr
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	r = r.Clone(ctx)
+	if isWebPage(r) {
+		// Uncompressed, for addScript to change.
+		r.Header.Del("Accept-Encoding")
+	}
 	c := takeCredentials(r)
 	session, err := p.sessions.Lookup(ctx, c.token)
 	switch {
@@ -88,4 +99,48 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.proxy.ServeHTTP(w, r)
+}
+
+// scriptTag adds the bridge's script to jellyfin-web.
+const scriptTag = `<script src="/sso/bridge.js"></script>`
+
+// maxWebPage bounds the size of jellyfin-web's page that addScript reads.
+const maxWebPage = 1 << 20
+
+// isWebPage reports whether r asks for jellyfin-web's page.
+func isWebPage(r *http.Request) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		(r.URL.Path == "/web/" || r.URL.Path == "/web/index.html")
+}
+
+// addScript adds scriptTag to jellyfin-web's page, before its </head>. The
+// page it changes loses its validators, so that no browser keeps a copy
+// without the script. A page it can't change goes on as it is: jellyfin-web
+// works without the script, until its token expires.
+func addScript(resp *http.Response) error {
+	if !isWebPage(resp.Request) || resp.StatusCode != http.StatusOK ||
+		resp.Header.Get("Content-Encoding") != "" || resp.Request.Method != http.MethodGet {
+		return nil
+	}
+	page, err := io.ReadAll(io.LimitReader(resp.Body, maxWebPage+1))
+	if err != nil {
+		return err
+	}
+	head := bytes.Index(page, []byte("</head>"))
+	if len(page) > maxWebPage || head < 0 {
+		clog.WarnContext(resp.Request.Context(), "can't add the bridge's script to jellyfin-web's page", "size", len(page))
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(page), resp.Body), resp.Body}
+		return nil
+	}
+	resp.Body.Close()
+	page = slices.Concat(page[:head], []byte(scriptTag), page[head:])
+	resp.Body = io.NopCloser(bytes.NewReader(page))
+	resp.ContentLength = int64(len(page))
+	resp.Header.Set("Content-Length", fmt.Sprint(len(page)))
+	resp.Header.Del("Etag")
+	resp.Header.Del("Last-Modified")
+	return nil
 }
