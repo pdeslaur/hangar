@@ -2,6 +2,7 @@
 // which the page loads first, then opens it.
 import { createMemo, Errored, Loading } from "solid-js";
 import { render } from "@solidjs/web";
+import { message } from "./api";
 import "./style.css";
 
 declare const jellyfinBridge: { signIn(): Promise<void> };
@@ -17,7 +18,7 @@ function Login() {
       <Errored
         fallback={(err, reset) => (
           <>
-            <p>Signing in failed: {err() instanceof Error ? (err() as Error).message : String(err())}</p>
+            <p>Signing in failed: {message(err())}</p>
             <p>
               <button onClick={reset}>Try again</button>
             </p>

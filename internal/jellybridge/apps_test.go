@@ -84,7 +84,7 @@ func TestProxyRefuses(t *testing.T) {
 	defer srv.Close()
 	target, _ := url.Parse(srv.URL)
 	s, _ := openStore(t)
-	p := NewProxy(target, s, NewApps(s, nil), nil)
+	p := NewProxy(target, NewApps(s, nil))
 	for _, path := range []string{
 		"/Users/u1/Authenticate?pw=secret",
 		"/users/U1/authenticate/",
@@ -159,8 +159,6 @@ func TestAppsJellyfin(t *testing.T) {
 	client := &jellyfin.Client{URL: s.URL, Key: jellyfintest.Key, HTTP: http.DefaultClient}
 	apps := NewApps(store, client)
 	pages := &SSO{
-		Sessions:   store,
-		Jellyfin:   client,
 		Apps:       apps,
 		ServerID:   "server1",
 		UserHeader: userHeader,
@@ -168,7 +166,7 @@ func TestAppsJellyfin(t *testing.T) {
 		BrowserTTL: 8 * time.Hour,
 	}
 	target, _ := url.Parse(s.URL)
-	proxy := httptest.NewServer(NewProxy(target, store, apps, nil))
+	proxy := httptest.NewServer(NewProxy(target, apps))
 	defer proxy.Close()
 
 	// signedIn checks a login's result: a bridge token for alice.

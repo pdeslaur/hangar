@@ -56,7 +56,7 @@ func TestProxyJellyfin(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := url.Parse(s.URL)
-	proxy := httptest.NewServer(NewProxy(target, store, NewApps(store, nil), nil))
+	proxy := httptest.NewServer(NewProxy(target, NewApps(store, nil)))
 	defer proxy.Close()
 
 	if status, name := jellyfintest.Me(t, proxy.URL, token); status != http.StatusOK || name != "alice" {

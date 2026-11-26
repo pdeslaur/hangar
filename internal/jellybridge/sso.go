@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"mime"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -51,9 +49,8 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 // Only the single sign-on may reach these paths, and it has to set
 // UserHeader on every request to them, removing a client's own.
 type SSO struct {
-	Sessions *Store
-	Jellyfin *jellyfin.Client
-	Apps     *Apps
+	// Apps signs apps in, and holds the sessions and the Jellyfin client.
+	Apps *Apps
 	// ServerID is Jellyfin's, from /System/Info/Public.
 	ServerID string
 	// UserHeader is the request header naming the signed-in user.
@@ -70,29 +67,49 @@ type SSO struct {
 	// mu serializes making sessions: logging a device in to Jellyfin ends
 	// its earlier token, which a concurrent session would hold.
 	mu sync.Mutex
+
+	once sync.Once
+	mux  *http.ServeMux
 }
 
 func (s *SSO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// get serves the file name of web.FS.
-	get := func(name, cache string) {
-		if r.Method != http.MethodGet && r.Method != http.MethodHead {
-			w.Header().Set("Allow", "GET, HEAD")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if info, err := fs.Stat(web.FS, name); err != nil || info.IsDir() {
-			http.NotFound(w, r)
-			return
-		}
+	s.once.Do(func() {
+		s.mux = http.NewServeMux()
+		s.mux.HandleFunc("GET /sso/{$}", serveFile("account.html", "no-store"))
+		s.mux.HandleFunc("GET /sso/login", serveFile("login.html", "no-store"))
+		s.mux.HandleFunc("GET /sso/bridge.js", serveFile("bridge.js", "no-cache"))
+		s.mux.HandleFunc("GET /sso/assets/{name}", func(w http.ResponseWriter, r *http.Request) {
+			serveFile("assets/"+r.PathValue("name"), "public, max-age=31536000, immutable")(w, r)
+		})
+		s.mux.HandleFunc("GET /sso/sessions", s.signedIn(s.serveSessions))
+		s.mux.HandleFunc("POST /sso/session", postJSON(s.signedIn(s.serveSession)))
+		s.mux.HandleFunc("POST /sso/quickconnect", postJSON(s.signedIn(s.serveQuickConnect)))
+		s.mux.HandleFunc("POST /sso/code", postJSON(s.signedIn(s.serveCode)))
+		s.mux.HandleFunc("POST /sso/revoke", postJSON(s.signedIn(s.serveRevoke)))
+	})
+	s.mux.ServeHTTP(w, r)
+}
+
+// serveFile serves the file name of web.FS.
+func serveFile(name, cache string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", cache)
 		http.ServeFileFS(w, r, web.FS, name)
 	}
-	post := func(serve func(http.ResponseWriter, *http.Request, user)) {
-		if r.Method != http.MethodPost {
-			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+}
+
+// signedIn serves a request with the signed-in user, or answers an error.
+func (s *SSO) signedIn(serve func(http.ResponseWriter, *http.Request, user)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if u, ok := s.user(w, r); ok {
+			serve(w, r, u)
 		}
+	}
+}
+
+// postJSON serves a POST only if its body is JSON from the same site.
+func postJSON(serve http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		// A JSON body can't come from another site's form, and a script
 		// there can't send one without CORS allowing it, which nothing
 		// here does.
@@ -104,41 +121,7 @@ func (s *SSO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cross-site request", http.StatusForbidden)
 			return
 		}
-		if u, ok := s.user(w, r); ok {
-			serve(w, r, u)
-		}
-	}
-
-	if name, ok := strings.CutPrefix(r.URL.Path, "/sso/assets/"); ok {
-		get("assets/"+name, "public, max-age=31536000, immutable")
-		return
-	}
-	switch r.URL.Path {
-	case "/sso/login":
-		get("login.html", "no-store")
-	case "/sso/":
-		get("account.html", "no-store")
-	case "/sso/bridge.js":
-		get("bridge.js", "no-cache")
-	case "/sso/session":
-		post(s.serveSession)
-	case "/sso/quickconnect":
-		post(s.serveQuickConnect)
-	case "/sso/code":
-		post(s.serveCode)
-	case "/sso/revoke":
-		post(s.serveRevoke)
-	case "/sso/sessions":
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if u, ok := s.user(w, r); ok {
-			s.serveSessions(w, r, u)
-		}
-	default:
-		http.NotFound(w, r)
+		serve(w, r)
 	}
 }
 
@@ -161,7 +144,7 @@ func (s *SSO) user(w http.ResponseWriter, r *http.Request) (user, bool) {
 		http.Error(w, "no Jellyfin user for "+name, http.StatusForbidden)
 		return user{}, false
 	}
-	id, err := s.Jellyfin.UserID(ctx, username)
+	id, err := s.Apps.Jellyfin.UserID(ctx, username)
 	if err != nil {
 		clog.ErrorContext(ctx, "finding a Jellyfin user", "user", name, "username", username, "error", err)
 		http.Error(w, "Jellyfin unavailable", http.StatusBadGateway)
@@ -219,7 +202,7 @@ func (s *SSO) serveSession(w http.ResponseWriter, r *http.Request, u user) {
 		http.Error(w, "making a session failed", http.StatusBadGateway)
 		return
 	}
-	token, err := s.Sessions.IssueToken(ctx, session.ID, s.BrowserTTL)
+	token, err := s.Apps.Sessions.IssueToken(ctx, session.ID, s.BrowserTTL)
 	if err != nil {
 		clog.ErrorContext(ctx, "issuing a token", "session", session.ID, "error", err)
 		http.Error(w, "issuing a token failed", http.StatusInternalServerError)
@@ -240,17 +223,17 @@ func (s *SSO) serveSession(w http.ResponseWriter, r *http.Request, u user) {
 func (s *SSO) browserSession(ctx context.Context, u user, deviceID string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session, err := s.Sessions.FindSession(ctx, Browser, u.id, deviceID)
+	session, err := s.Apps.Sessions.FindSession(ctx, Browser, u.id, deviceID)
 	if !errors.Is(err, errNoSession) {
 		return session, err
 	}
 	device := browserDevice
 	device.ID = deviceID
-	result, err := s.Jellyfin.Login(ctx, u.id, device)
+	result, err := s.Apps.Jellyfin.Login(ctx, u.id, device)
 	if err != nil {
 		return Session{}, err
 	}
-	return s.Sessions.CreateSession(ctx, Session{
+	return s.Apps.Sessions.CreateSession(ctx, Session{
 		Kind:          Browser,
 		UserID:        u.id,
 		Username:      u.username,
@@ -265,8 +248,8 @@ func (s *SSO) serveQuickConnect(w http.ResponseWriter, r *http.Request, u user) 
 	if !decode(w, r, &req) {
 		return
 	}
-	err := s.Jellyfin.AuthorizeQuickConnect(ctx, req.Code, u.id)
-	if se := (*jellyfin.StatusError)(nil); errors.As(err, &se) && se.Status == http.StatusNotFound {
+	err := s.Apps.Jellyfin.AuthorizeQuickConnect(ctx, req.Code, u.id)
+	if jellyfin.IsStatus(err, http.StatusNotFound) {
 		http.Error(w, "no app is showing that code", http.StatusNotFound)
 		return
 	}
@@ -295,13 +278,12 @@ type sessionInfo struct {
 	Kind     Kind
 	Client   string
 	Device   string
-	Created  time.Time
 	LastUsed time.Time
 }
 
 func (s *SSO) serveSessions(w http.ResponseWriter, r *http.Request, u user) {
 	ctx := r.Context()
-	sessions, err := s.Sessions.UserSessions(ctx, u.id)
+	sessions, err := s.Apps.Sessions.UserSessions(ctx, u.id)
 	if err != nil {
 		clog.ErrorContext(ctx, "listing sessions", "user", u.name, "error", err)
 		http.Error(w, "listing sessions failed", http.StatusInternalServerError)
@@ -314,7 +296,6 @@ func (s *SSO) serveSessions(w http.ResponseWriter, r *http.Request, u user) {
 			Kind:     session.Kind,
 			Client:   session.Device.Client,
 			Device:   session.Device.Name,
-			Created:  session.Created,
 			LastUsed: session.LastUsed,
 		})
 	}
@@ -327,25 +308,22 @@ func (s *SSO) serveRevoke(w http.ResponseWriter, r *http.Request, u user) {
 	if !decode(w, r, &req) {
 		return
 	}
-	sessions, err := s.Sessions.UserSessions(ctx, u.id)
+	session, err := s.Apps.Sessions.UserSession(ctx, u.id, req.ID)
+	if errors.Is(err, errNoSession) {
+		http.Error(w, "no such session", http.StatusNotFound)
+		return
+	}
 	if err != nil {
-		clog.ErrorContext(ctx, "listing sessions", "user", u.name, "error", err)
-		http.Error(w, "listing sessions failed", http.StatusInternalServerError)
+		clog.ErrorContext(ctx, "finding a session", "user", u.name, "error", err)
+		http.Error(w, "finding the session failed", http.StatusInternalServerError)
 		return
 	}
-	for _, session := range sessions {
-		if session.ID != req.ID {
-			continue
-		}
-		if err := EndSession(ctx, s.Sessions, s.Jellyfin, session); err != nil {
-			clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
-			http.Error(w, "ending the session failed", http.StatusBadGateway)
-			return
-		}
-		clog.InfoContext(ctx, "revoked a session", "user", u.name, "session", session.ID,
-			"client", session.Device.Client, "device", session.Device.Name)
-		w.WriteHeader(http.StatusNoContent)
+	if err := EndSession(ctx, s.Apps.Sessions, s.Apps.Jellyfin, session); err != nil {
+		clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
+		http.Error(w, "ending the session failed", http.StatusBadGateway)
 		return
 	}
-	http.Error(w, "no such session", http.StatusNotFound)
+	clog.InfoContext(ctx, "revoked a session", "user", u.name, "session", session.ID,
+		"client", session.Device.Client, "device", session.Device.Name)
+	w.WriteHeader(http.StatusNoContent)
 }

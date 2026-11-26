@@ -1,6 +1,8 @@
 package jellybridge
 
 import (
+	"cmp"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -38,24 +40,15 @@ type credentials struct {
 // twice reaches Jellyfin as both values joined by a comma, which no token
 // matches.
 func takeCredentials(r *http.Request) credentials {
-	var c credentials
-	header := r.Header.Get("Authorization")
-	if header == "" {
-		header = r.Header.Get(embyAuthorization)
-	}
-	if params, ok := parseAuthorization(header); ok {
-		c.device = jellyfin.Device{
+	params := parseAuthorization(cmp.Or(r.Header.Get("Authorization"), r.Header.Get(embyAuthorization)))
+	c := credentials{
+		device: jellyfin.Device{
 			Client:  params["Client"],
 			Name:    params["Device"],
 			ID:      params["DeviceId"],
 			Version: params["Version"],
-		}
-		c.token = params["Token"]
-	}
-	for _, h := range []string{embyToken, mediaBrowserToken} {
-		if c.token == "" {
-			c.token = strings.Join(r.Header.Values(h), ",")
-		}
+		},
+		token: cmp.Or(params["Token"], join(r.Header.Values(embyToken)), join(r.Header.Values(mediaBrowserToken))),
 	}
 	for _, h := range []string{"Authorization", embyAuthorization, embyToken, mediaBrowserToken} {
 		r.Header.Del(h)
@@ -63,12 +56,14 @@ func takeCredentials(r *http.Request) credentials {
 
 	query, apiKey, legacyKey := takeQueryTokens(r.URL.RawQuery)
 	r.URL.RawQuery = query
-	for _, v := range [][]string{apiKey, legacyKey} {
-		if c.token == "" {
-			c.token = strings.Join(v, ",")
-		}
-	}
+	c.token = cmp.Or(c.token, join(apiKey), join(legacyKey))
 	return c
+}
+
+// join joins the values of a header or query parameter given more than once
+// as Jellyfin does, with a comma.
+func join(values []string) string {
+	return strings.Join(values, ",")
 }
 
 // takeQueryTokens removes from query every parameter named apikey or
@@ -95,13 +90,13 @@ func takeQueryTokens(query string) (rest string, apiKey, legacyKey []string) {
 }
 
 // parseAuthorization returns the parameters of an Authorization header of
-// the MediaBrowser or Emby scheme, and false for another scheme.
-func parseAuthorization(header string) (map[string]string, bool) {
+// the MediaBrowser or Emby scheme, and none for another scheme.
+func parseAuthorization(header string) map[string]string {
 	scheme, rest, ok := strings.Cut(header, " ")
 	if !ok || !(strings.EqualFold(scheme, authorizationScheme) || strings.EqualFold(scheme, legacyScheme)) {
-		return nil, false
+		return nil
 	}
-	return parseParams(rest), true
+	return parseParams(rest)
 }
 
 // parseParams parses an Authorization header's parameters as Jellyfin does
@@ -121,13 +116,13 @@ func parseParams(s string) map[string]string {
 	}
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
-		case c == '"' || c == ',':
-			// A quote opens or closes a value; a comma outside one ends it.
-			escaped = !escaped == (c == '"')
-			if c == ',' && !escaped {
-				add(i)
-				start = i + 1
-			}
+		case c == '"':
+			// A quote opens or closes a value.
+			escaped = !escaped
+		case c == ',' && !escaped:
+			// A comma outside one ends it.
+			add(i)
+			start = i + 1
 		case !escaped && c == '=':
 			key = strings.TrimSpace(s[start:i])
 			start = i + 1
@@ -146,30 +141,18 @@ func unescape(s string) string {
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
-		switch {
-		case s[i] == '+':
+		if s[i] == '%' && i+2 < len(s) {
+			if c, err := hex.DecodeString(s[i+1 : i+3]); err == nil {
+				b.WriteByte(c[0])
+				i += 2
+				continue
+			}
+		}
+		if s[i] == '+' {
 			b.WriteByte(' ')
-		case s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
-			b.WriteByte(unhex(s[i+1])<<4 | unhex(s[i+2]))
-			i += 2
-		default:
+		} else {
 			b.WriteByte(s[i])
 		}
 	}
 	return b.String()
-}
-
-func isHex(c byte) bool {
-	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
-}
-
-func unhex(c byte) byte {
-	switch {
-	case c <= '9':
-		return c - '0'
-	case c <= 'F':
-		return c - 'A' + 10
-	default:
-		return c - 'a' + 10
-	}
 }

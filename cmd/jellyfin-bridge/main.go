@@ -128,8 +128,6 @@ func run(ctx context.Context, cfg *config) error {
 	mux := http.NewServeMux()
 	apps := jellybridge.NewApps(sessions, client)
 	mux.Handle("/sso/", &jellybridge.SSO{
-		Sessions:      sessions,
-		Jellyfin:      client,
 		Apps:          apps,
 		ServerID:      serverID,
 		UserHeader:    cfg.UserHeader,
@@ -137,7 +135,7 @@ func run(ctx context.Context, cfg *config) error {
 		BrowserTTL:    cfg.BrowserTTL,
 		RefreshBefore: cfg.RefreshBefore,
 	})
-	mux.Handle("/", jellybridge.NewProxy(target, sessions, apps, nil))
+	mux.Handle("/", jellybridge.NewProxy(target, apps))
 
 	lis, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {

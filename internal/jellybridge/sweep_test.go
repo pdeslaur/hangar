@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,8 +27,7 @@ func TestSweep(t *testing.T) {
 			w.WriteHeader(http.StatusBadGateway)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		loggedOut = append(loggedOut, auth[strings.Index(auth, `"`)+1:len(auth)-1])
+		loggedOut = append(loggedOut, parseAuthorization(r.Header.Get("Authorization"))["Token"])
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
@@ -40,7 +38,7 @@ func TestSweep(t *testing.T) {
 	used, _ := s.CreateSession(ctx, Session{Kind: Browser, UserID: "u1", JellyfinToken: "used-token"})
 	short, _ := s.IssueToken(ctx, used.ID, time.Hour)
 	c.t = c.t.Add(40 * 24 * time.Hour)
-	s.Touch(ctx, used.ID)
+	s.Touch(ctx, used)
 	c.t = c.t.Add(10 * 24 * time.Hour)
 
 	// Jellyfin down: the idle session stays, for the next sweep.

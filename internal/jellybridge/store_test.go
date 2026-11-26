@@ -103,10 +103,11 @@ func TestStoreIdle(t *testing.T) {
 	// Used every 30 days, a session lasts; unused for 45, it ends.
 	for range 2 {
 		c.t = c.t.Add(30 * 24 * time.Hour)
-		if _, err := s.Lookup(ctx, usedToken); err != nil {
+		session, err := s.Lookup(ctx, usedToken)
+		if err != nil {
 			t.Fatalf("Lookup after 30 days: %v", err)
 		}
-		if err := s.Touch(ctx, used.ID); err != nil {
+		if err := s.Touch(ctx, session); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -134,27 +135,29 @@ func TestStoreTouchThrottles(t *testing.T) {
 	ctx := context.Background()
 	s, c := openStore(t)
 	session := newSession(t, s, App)
-	lastUsed := func() time.Time {
+	// current is the session as stored, as Lookup returns it.
+	current := func() Session {
 		var got Session
 		if err := s.db.Take(&got, "id = ?", session.ID).Error; err != nil {
 			t.Fatal(err)
 		}
-		return got.LastUsed
+		return got
 	}
+	lastUsed := func() time.Time { return current().LastUsed }
 
 	c.t = c.t.Add(time.Hour)
-	s.Touch(ctx, session.ID)
+	s.Touch(ctx, current())
 	first := lastUsed()
 	if !first.Equal(c.t) {
 		t.Errorf("last_used %v, want %v", first, c.t)
 	}
 	c.t = c.t.Add(time.Minute)
-	s.Touch(ctx, session.ID)
+	s.Touch(ctx, current())
 	if got := lastUsed(); !got.Equal(first) {
 		t.Errorf("Touch a minute later wrote last_used %v", got)
 	}
 	c.t = c.t.Add(touchEvery)
-	s.Touch(ctx, session.ID)
+	s.Touch(ctx, current())
 	if got := lastUsed(); !got.Equal(c.t) {
 		t.Errorf("Touch after touchEvery: last_used %v, want %v", got, c.t)
 	}

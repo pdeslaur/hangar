@@ -27,8 +27,6 @@ const (
 	// usedCodeMemory is how long a used code is remembered: an app keeps
 	// sending the code it signed in with when its token stops working.
 	usedCodeMemory = 90 * 24 * time.Hour
-	// maxLoginRequest bounds the body of a password login.
-	maxLoginRequest = 4 << 10
 )
 
 // Apps signs native apps in, with bridge tokens lasting until revoked:
@@ -46,26 +44,26 @@ type Apps struct {
 	now func() time.Time
 
 	mu sync.Mutex
-	// codes are the live one-time codes.
-	codes map[string]appCode
-	// failures counts the wrong codes sent for each username, lowercase,
-	// that has a code.
-	failures map[string]int
-	// used are the codes used, by usedKey, and when: an app sending one
-	// again isn't guessing.
-	used map[string]time.Time
+	// codes are the one-time codes, one per username, lowercase.
+	codes map[string]*appCode
+	// used are the codes used, and when: an app sending one again isn't
+	// guessing.
+	used map[usedCode]time.Time
 }
 
-// usedKey is the key of a code username used.
-func usedKey(username, code string) string {
-	return strings.ToLower(username) + "\x00" + code
-}
-
-// appCode is a one-time code's user.
+// appCode is a one-time code and its user.
 type appCode struct {
+	code     string
 	userID   string
 	username string
 	expires  time.Time
+	// failures counts the wrong codes sent for its username.
+	failures int
+}
+
+// usedCode is a code a username, lowercase, used.
+type usedCode struct {
+	username, code string
 }
 
 // NewApps returns an Apps keeping its sessions in sessions.
@@ -74,21 +72,25 @@ func NewApps(sessions *Store, client *jellyfin.Client) *Apps {
 		Sessions: sessions,
 		Jellyfin: client,
 		now:      time.Now,
-		codes:    map[string]appCode{},
-		failures: map[string]int{},
-		used:     map[string]time.Time{},
+		codes:    map[string]*appCode{},
+		used:     map[usedCode]time.Time{},
 	}
 }
 
 // IssueCode returns a one-time code signing an app in as the Jellyfin user
 // userID, called username, replacing the code it had, and when it expires.
 func (a *Apps) IssueCode(userID, username string) (string, time.Time) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1e8))
+	if err != nil {
+		panic(err)
+	}
+	code := fmt.Sprintf("%0*d", appCodeDigits, n)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
-	for code, c := range a.codes {
-		if c.userID == userID || !now.Before(c.expires) {
-			delete(a.codes, code)
+	for k, c := range a.codes {
+		if !now.Before(c.expires) {
+			delete(a.codes, k)
 		}
 	}
 	for k, when := range a.used {
@@ -96,20 +98,8 @@ func (a *Apps) IssueCode(userID, username string) (string, time.Time) {
 			delete(a.used, k)
 		}
 	}
-	delete(a.failures, strings.ToLower(username))
-	var code string
-	for {
-		n, err := rand.Int(rand.Reader, big.NewInt(1e8))
-		if err != nil {
-			panic(err)
-		}
-		code = fmt.Sprintf("%0*d", appCodeDigits, n)
-		if _, taken := a.codes[code]; !taken {
-			break
-		}
-	}
 	expires := now.Add(appCodeTTL)
-	a.codes[code] = appCode{userID: userID, username: username, expires: expires}
+	a.codes[strings.ToLower(username)] = &appCode{code: code, userID: userID, username: username, expires: expires}
 	return code, expires
 }
 
@@ -122,27 +112,18 @@ func (a *Apps) redeem(username, code string) (appCode, bool) {
 	defer a.mu.Unlock()
 	key := strings.ToLower(username)
 	now := a.now()
-	c, ok := a.codes[code]
-	if ok && now.Before(c.expires) && strings.EqualFold(c.username, username) && a.failures[key] < maxCodeFailures {
-		delete(a.codes, code)
-		delete(a.failures, key)
-		a.used[usedKey(username, code)] = now
-		return c, true
+	c, ok := a.codes[key]
+	if ok && c.code == code && now.Before(c.expires) && c.failures < maxCodeFailures {
+		delete(a.codes, key)
+		a.used[usedCode{key, code}] = now
+		return *c, true
 	}
-	if _, ok := a.used[usedKey(username, code)]; ok {
+	if _, used := a.used[usedCode{key, code}]; used || !ok {
 		return appCode{}, false
 	}
-	// Count the failure if username has a code to guess: IssueCode keeps
-	// one per user.
-	for k, c := range a.codes {
-		if !strings.EqualFold(c.username, username) {
-			continue
-		}
-		a.failures[key]++
-		if a.failures[key] >= maxCodeFailures {
-			delete(a.codes, k)
-		}
-		break
+	c.failures++
+	if c.failures >= maxCodeFailures {
+		delete(a.codes, key)
 	}
 	return appCode{}, false
 }
@@ -162,11 +143,10 @@ func (a *Apps) ServePasswordLogin(w http.ResponseWriter, r *http.Request, device
 		Username string
 		Pw       string
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginRequest)).Decode(&body); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	if !decode(w, r, &body) {
 		return
 	}
-	if device.Client == "" || device.Name == "" || device.ID == "" || device.Version == "" {
+	if !device.Complete() {
 		http.Error(w, "the Authorization header has to name the device", http.StatusBadRequest)
 		return
 	}
@@ -188,9 +168,7 @@ func (a *Apps) ServePasswordLogin(w http.ResponseWriter, r *http.Request, device
 		http.Error(w, "making a session failed", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Write(out)
+	reply(w, json.RawMessage(out))
 }
 
 // Adopt makes an app session holding the Jellyfin token of result, a login
@@ -205,7 +183,7 @@ func (a *Apps) Adopt(ctx context.Context, result *jellyfin.AuthenticationResult)
 	if err := json.Unmarshal(result.Raw, &fields); err != nil {
 		return nil, err
 	}
-	if _, err := a.Sessions.DeleteDeviceSessions(ctx, App, result.UserID, result.Device.ID); err != nil {
+	if err := a.Sessions.DeleteDeviceSessions(ctx, App, result.UserID, result.Device.ID); err != nil {
 		return nil, err
 	}
 	session, err := a.Sessions.CreateSession(ctx, Session{

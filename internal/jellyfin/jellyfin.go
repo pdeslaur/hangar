@@ -70,11 +70,10 @@ func param(key, value string) string {
 	return key + `="` + url.QueryEscape(value) + `"`
 }
 
-func (d Device) validate() error {
-	if d.Client == "" || d.Name == "" || d.ID == "" || d.Version == "" {
-		return errors.New("a device needs its client, name, ID and version")
-	}
-	return nil
+// Complete reports whether d names its client, name, ID and version, which
+// Jellyfin needs to log a device in.
+func (d Device) Complete() bool {
+	return d.Client != "" && d.Name != "" && d.ID != "" && d.Version != ""
 }
 
 // StatusError is a response the server answered with a status other than
@@ -89,6 +88,12 @@ func (e *StatusError) Error() string {
 	return fmt.Sprintf("jellyfin: %s %s: %d %s", e.Method, e.Path, e.Status, e.Body)
 }
 
+// IsStatus reports whether err is a StatusError with status.
+func IsStatus(err error, status int) bool {
+	se := (*StatusError)(nil)
+	return errors.As(err, &se) && se.Status == status
+}
+
 // UserID returns the ID of the user called name, compared without case, as
 // Jellyfin compares usernames.
 func (c *Client) UserID(ctx context.Context, name string) (string, error) {
@@ -96,7 +101,7 @@ func (c *Client) UserID(ctx context.Context, name string) (string, error) {
 		Name string
 		ID   string `json:"Id"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/Users", c.keyHeader(), nil, &users); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/Users", TokenHeader(c.Key), nil, &users); err != nil {
 		return "", err
 	}
 	for _, u := range users {
@@ -110,7 +115,7 @@ func (c *Client) UserID(ctx context.Context, name string) (string, error) {
 // Ready returns nil once Jellyfin has started. While it starts, a setup
 // server answers /System/Info/Public and 503 to everything else.
 func (c *Client) Ready(ctx context.Context) error {
-	return c.do(ctx, http.MethodGet, "/Branding/Configuration", "", nil, nil)
+	return c.Do(ctx, http.MethodGet, "/Branding/Configuration", "", nil, nil)
 }
 
 // ServerID returns the server's ID, which clients' credentials name.
@@ -118,7 +123,7 @@ func (c *Client) ServerID(ctx context.Context) (string, error) {
 	var info struct {
 		ID string `json:"Id"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/System/Info/Public", "", nil, &info); err != nil {
+	if err := c.Do(ctx, http.MethodGet, "/System/Info/Public", "", nil, &info); err != nil {
 		return "", err
 	}
 	if info.ID == "" {
@@ -177,14 +182,14 @@ func ParseAuthenticationResult(raw []byte) (*AuthenticationResult, error) {
 // Login logs device in as the user userID with Quick Connect, which has to be
 // enabled. It ends the tokens the same user had on the same device ID.
 func (c *Client) Login(ctx context.Context, userID string, device Device) (*AuthenticationResult, error) {
-	if err := device.validate(); err != nil {
-		return nil, err
+	if !device.Complete() {
+		return nil, errors.New("jellyfin: a device needs its client, name, ID and version")
 	}
 	var request struct {
 		Secret string
 		Code   string
 	}
-	if err := c.do(ctx, http.MethodPost, "/QuickConnect/Initiate", device.Header(""), nil, &request); err != nil {
+	if err := c.Do(ctx, http.MethodPost, "/QuickConnect/Initiate", device.Header(""), nil, &request); err != nil {
 		return nil, err
 	}
 	if err := c.AuthorizeQuickConnect(ctx, request.Code, userID); err != nil {
@@ -192,7 +197,7 @@ func (c *Client) Login(ctx context.Context, userID string, device Device) (*Auth
 	}
 	var raw json.RawMessage
 	body := map[string]string{"Secret": request.Secret}
-	if err := c.do(ctx, http.MethodPost, "/Users/AuthenticateWithQuickConnect", device.Header(""), body, &raw); err != nil {
+	if err := c.Do(ctx, http.MethodPost, "/Users/AuthenticateWithQuickConnect", device.Header(""), body, &raw); err != nil {
 		return nil, err
 	}
 	return ParseAuthenticationResult(raw)
@@ -202,13 +207,13 @@ func (c *Client) Login(ctx context.Context, userID string, device Device) (*Auth
 // the user userID.
 func (c *Client) AuthorizeQuickConnect(ctx context.Context, code, userID string) error {
 	path := "/QuickConnect/Authorize?" + url.Values{"code": {code}, "userId": {userID}}.Encode()
-	return c.do(ctx, http.MethodPost, path, c.keyHeader(), nil, nil)
+	return c.Do(ctx, http.MethodPost, path, TokenHeader(c.Key), nil, nil)
 }
 
 // Valid reports whether Jellyfin takes token.
 func (c *Client) Valid(ctx context.Context, token string) (bool, error) {
-	err := c.do(ctx, http.MethodGet, "/Users/Me", tokenHeader(token), nil, nil)
-	if se := (*StatusError)(nil); errors.As(err, &se) && se.Status == http.StatusUnauthorized {
+	err := c.Do(ctx, http.MethodGet, "/Users/Me", TokenHeader(token), nil, nil)
+	if IsStatus(err, http.StatusUnauthorized) {
 		return false, nil
 	}
 	return err == nil, err
@@ -220,25 +225,22 @@ func (c *Client) Valid(ctx context.Context, token string) (bool, error) {
 // end every user's tokens on the same device ID: one browser shared by two
 // people.
 func (c *Client) Logout(ctx context.Context, token string) error {
-	err := c.do(ctx, http.MethodPost, "/Sessions/Logout", tokenHeader(token), nil, nil)
-	if se := (*StatusError)(nil); errors.As(err, &se) && se.Status == http.StatusUnauthorized {
+	err := c.Do(ctx, http.MethodPost, "/Sessions/Logout", TokenHeader(token), nil, nil)
+	if IsStatus(err, http.StatusUnauthorized) {
 		return nil
 	}
 	return err
 }
 
-func (c *Client) keyHeader() string {
-	return tokenHeader(c.Key)
-}
-
-func tokenHeader(token string) string {
+// TokenHeader is an Authorization header carrying token alone.
+func TokenHeader(token string) string {
 	return "MediaBrowser " + param("Token", token)
 }
 
-// do sends a request with authorization as its Authorization header and in,
+// Do sends a request with authorization as its Authorization header and in,
 // if not nil, as its JSON body, and decodes a JSON response into out, if not
 // nil. Any status but 2xx is a *StatusError.
-func (c *Client) do(ctx context.Context, method, path, authorization string, in, out any) error {
+func (c *Client) Do(ctx context.Context, method, path, authorization string, in, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)

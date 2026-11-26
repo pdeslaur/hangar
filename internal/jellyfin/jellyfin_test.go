@@ -60,7 +60,7 @@ func TestStatusErrorHidesQuery(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &Client{URL: srv.URL, Key: "key", HTTP: srv.Client()}
-	err := c.do(context.Background(), http.MethodPost, "/QuickConnect/Authorize?code=123456", "", nil, nil)
+	err := c.Do(context.Background(), http.MethodPost, "/QuickConnect/Authorize?code=123456", "", nil, nil)
 	var se *StatusError
 	if !errors.As(err, &se) || se.Status != http.StatusForbidden || se.Path != "/QuickConnect/Authorize" {
 		t.Errorf("do: %v, want a 403 StatusError for /QuickConnect/Authorize", err)

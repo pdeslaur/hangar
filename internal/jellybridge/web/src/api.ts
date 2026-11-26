@@ -6,7 +6,6 @@ export type Session = {
   Kind: "browser" | "app";
   Client: string;
   Device: string;
-  Created: string;
   LastUsed: string;
 };
 
@@ -16,6 +15,11 @@ export type AppCode = {
   Code: string;
   ExpiresIn: number;
 };
+
+/** message is what to show of err. */
+export function message(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 async function send<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init);

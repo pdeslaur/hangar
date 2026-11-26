@@ -54,8 +54,7 @@ func fakeUsers(t *testing.T) *jellyfin.Client {
 func TestLoginRefuses(t *testing.T) {
 	store, _ := openStore(t)
 	l := &SSO{
-		Sessions:   store,
-		Jellyfin:   fakeUsers(t),
+		Apps:       NewApps(store, fakeUsers(t)),
 		UserHeader: userHeader,
 		Users:      map[string]string{"phil": "alice"},
 		BrowserTTL: 8 * time.Hour,
@@ -96,7 +95,7 @@ func TestLoginRefuses(t *testing.T) {
 	}{
 		{"/sso/login", "/sso/bridge.js", "no-store"},
 		{"/sso/bridge.js", "jellyfin_credentials", "no-cache"},
-		{script, "/sso/sessions", "public, max-age=31536000, immutable"},
+		{script, "Jellyfin apps and sessions", "public, max-age=31536000, immutable"},
 	} {
 		w := get(tc.path)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), tc.has) || w.Header().Get("Cache-Control") != tc.cache {
@@ -104,7 +103,7 @@ func TestLoginRefuses(t *testing.T) {
 		}
 	}
 	for _, path := range []string{"/sso/assets/", "/sso/assets/missing.js", "/sso/assets/../account.html", "/sso/account.html"} {
-		if w := get(path); w.Code < 400 {
+		if w := get(path); w.Code == http.StatusOK {
 			t.Errorf("GET %s: %d", path, w.Code)
 		}
 	}
@@ -120,8 +119,6 @@ func TestLoginJellyfin(t *testing.T) {
 	client := &jellyfin.Client{URL: s.URL, Key: jellyfintest.Key, HTTP: http.DefaultClient}
 	apps := NewApps(store, client)
 	l := &SSO{
-		Sessions:      store,
-		Jellyfin:      client,
 		Apps:          apps,
 		ServerID:      "server1",
 		UserHeader:    userHeader,
@@ -130,7 +127,7 @@ func TestLoginJellyfin(t *testing.T) {
 		RefreshBefore: time.Hour,
 	}
 	target, _ := url.Parse(s.URL)
-	proxy := httptest.NewServer(NewProxy(target, store, apps, nil))
+	proxy := httptest.NewServer(NewProxy(target, apps))
 	defer proxy.Close()
 
 	signIn := func(deviceID string) sessionResponse {

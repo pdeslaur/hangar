@@ -5,6 +5,7 @@ package jellybridge
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/chainguard-dev/clog"
@@ -41,16 +43,14 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // Jellyfin's, and the obsolete password login and password resets are
 // refused.
 type Proxy struct {
-	sessions *Store
-	apps     *Apps
-	proxy    *httputil.ReverseProxy
+	apps  *Apps
+	proxy *httputil.ReverseProxy
 }
 
 // NewProxy returns a Proxy to the Jellyfin at target, its sessions in
-// sessions and its apps signed in by apps, sending requests with transport,
-// or http.DefaultTransport if nil.
-func NewProxy(target *url.URL, sessions *Store, apps *Apps, transport http.RoundTripper) *Proxy {
-	p := &Proxy{sessions: sessions, apps: apps}
+// apps.Sessions and its apps signed in by apps.
+func NewProxy(target *url.URL, apps *Apps) *Proxy {
+	p := &Proxy{apps: apps}
 	p.proxy = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
@@ -62,7 +62,6 @@ func NewProxy(target *url.URL, sessions *Store, apps *Apps, transport http.Round
 			}
 		},
 		ModifyResponse: p.modifyResponse,
-		Transport:      transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			clog.WarnContext(r.Context(), "forwarding to jellyfin", "error", err)
 			w.WriteHeader(http.StatusBadGateway)
@@ -98,7 +97,7 @@ var userAuthenticate = regexp.MustCompile(`^/users/[^/]+/authenticate$`)
 func routeOf(r *http.Request) route {
 	path := strings.TrimSuffix(strings.ToLower(r.URL.Path), "/")
 	switch {
-	case isWebPage(r):
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && (r.URL.Path == "/web/" || r.URL.Path == "/web/index.html"):
 		return webPage
 	case path == "/users/authenticatebyname":
 		return passwordLogin
@@ -112,14 +111,18 @@ func routeOf(r *http.Request) route {
 	return forward
 }
 
-// sessionKey is the context key of the session a request to Jellyfin
+// Context keys of a request to Jellyfin: its route, and the session it
 // carries the token of.
-type sessionKey struct{}
+type (
+	routeKey   struct{}
+	sessionKey struct{}
+)
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	r = r.Clone(ctx)
 	rt := routeOf(r)
+	ctx = context.WithValue(ctx, routeKey{}, rt)
+	r = r.Clone(ctx)
 	switch rt {
 	case webPage:
 		// Whole and uncompressed, for addScript to change: a browser may hold
@@ -138,26 +141,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := takeCredentials(r)
-	session, err := p.sessions.Lookup(ctx, c.token)
+	session, err := p.apps.Sessions.Lookup(ctx, c.token)
 	switch {
 	case err == nil:
-		if err := p.sessions.Touch(ctx, session.ID); err != nil {
+		if err := p.apps.Sessions.Touch(ctx, session); err != nil {
 			clog.WarnContext(ctx, "recording a session's use", "session", session.ID, "error", err)
-		}
-		device := session.Device
-		if c.device.Client != "" {
-			device.Client = c.device.Client
-		}
-		if c.device.Name != "" {
-			device.Name = c.device.Name
-		}
-		if c.device.Version != "" {
-			device.Version = c.device.Version
 		}
 		if rt == logout {
 			p.serveLogout(w, r, session)
 			return
 		}
+		device := session.Device
+		device.Client = cmp.Or(c.device.Client, device.Client)
+		device.Name = cmp.Or(c.device.Name, device.Name)
+		device.Version = cmp.Or(c.device.Version, device.Version)
 		r.Header.Set("Authorization", device.Header(session.JellyfinToken))
 		r = r.WithContext(context.WithValue(ctx, sessionKey{}, session))
 	case errors.Is(err, errNoSession):
@@ -179,19 +176,12 @@ const scriptTag = `<script src="/sso/bridge.js"></script>`
 // maxWebPage bounds the size of jellyfin-web's page that addScript reads.
 const maxWebPage = 1 << 20
 
-// isWebPage reports whether r asks for jellyfin-web's page.
-func isWebPage(r *http.Request) bool {
-	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
-		(r.URL.Path == "/web/" || r.URL.Path == "/web/index.html")
-}
-
 // addScript adds scriptTag to jellyfin-web's page, before its </head>. The
 // page it changes loses its validators, so that no browser keeps a copy
 // without the script. A page it can't change goes on as it is: jellyfin-web
 // works without the script, until its token expires.
 func addScript(resp *http.Response) error {
-	if !isWebPage(resp.Request) || resp.StatusCode != http.StatusOK ||
-		resp.Header.Get("Content-Encoding") != "" || resp.Request.Method != http.MethodGet {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Encoding") != "" || resp.Request.Method != http.MethodGet {
 		return nil
 	}
 	page, err := io.ReadAll(io.LimitReader(resp.Body, maxWebPage+1))
@@ -208,13 +198,17 @@ func addScript(resp *http.Response) error {
 		return nil
 	}
 	resp.Body.Close()
-	page = slices.Concat(page[:head], []byte(scriptTag), page[head:])
-	resp.Body = io.NopCloser(bytes.NewReader(page))
-	resp.ContentLength = int64(len(page))
-	resp.Header.Set("Content-Length", fmt.Sprint(len(page)))
+	setBody(resp, slices.Concat(page[:head], []byte(scriptTag), page[head:]))
 	resp.Header.Del("Etag")
 	resp.Header.Del("Last-Modified")
 	return nil
+}
+
+// setBody replaces the body of resp with b.
+func setBody(resp *http.Response, b []byte) {
+	resp.Body = io.NopCloser(bytes.NewReader(b))
+	resp.ContentLength = int64(len(b))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(b)))
 }
 
 // maxLoginResponse bounds the size of a login's result that adoptLogin
@@ -226,7 +220,7 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 	if session, ok := resp.Request.Context().Value(sessionKey{}).(Session); ok && resp.StatusCode == http.StatusUnauthorized {
 		p.checkSession(resp.Request.Context(), session)
 	}
-	switch routeOf(resp.Request) {
+	switch resp.Request.Context().Value(routeKey{}) {
 	case webPage:
 		return addScript(resp)
 	case quickConnectLogin:
@@ -258,9 +252,7 @@ func (p *Proxy) adoptLogin(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(out))
-	resp.ContentLength = int64(len(out))
-	resp.Header.Set("Content-Length", fmt.Sprint(len(out)))
+	setBody(resp, out)
 	resp.Header.Set("Cache-Control", "no-store")
 	return nil
 }
@@ -270,7 +262,7 @@ func (p *Proxy) adoptLogin(resp *http.Response) error {
 // the session holding it.
 func (p *Proxy) serveLogout(w http.ResponseWriter, r *http.Request, session Session) {
 	ctx := r.Context()
-	if err := EndSession(ctx, p.sessions, p.apps.Jellyfin, session); err != nil {
+	if err := EndSession(ctx, p.apps.Sessions, p.apps.Jellyfin, session); err != nil {
 		clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
 		http.Error(w, "ending the session failed", http.StatusBadGateway)
 		return
@@ -289,7 +281,7 @@ func (p *Proxy) checkSession(ctx context.Context, session Session) {
 	if err != nil || valid {
 		return
 	}
-	if err := p.sessions.DeleteSession(ctx, session.ID); err != nil {
+	if err := p.apps.Sessions.DeleteSession(ctx, session.ID); err != nil {
 		clog.WarnContext(ctx, "deleting a session Jellyfin no longer takes", "session", session.ID, "error", err)
 		return
 	}

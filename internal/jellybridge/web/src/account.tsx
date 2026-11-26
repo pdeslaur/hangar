@@ -4,10 +4,6 @@ import { render } from "@solidjs/web";
 import * as api from "./api";
 import "./style.css";
 
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 /** ago says how long ago when was, roughly. */
 function ago(when: string): string {
   const minutes = Math.round((Date.now() - Date.parse(when)) / 60000);
@@ -30,7 +26,7 @@ function QuickConnect(props: { onSignedIn: () => void }) {
       form.reset();
       props.onSignedIn();
     } catch (err) {
-      setResult(`Not signed in: ${message(err)}`);
+      setResult(`Not signed in: ${api.message(err)}`);
     }
   };
   return (
@@ -56,7 +52,7 @@ function AppCode() {
       setError("");
     } catch (err) {
       setCode(undefined);
-      setError(`No code: ${message(err)}`);
+      setError(`No code: ${api.message(err)}`);
     }
   };
   return (
@@ -64,7 +60,7 @@ function AppCode() {
       <h2>Sign in an app without Quick Connect</h2>
       <p>
         For Infuse and other apps asking for a password: get a code, then sign in with this username and the code
-        as the password. It works once, within 10 minutes.
+        as the password.
       </p>
       <form onSubmit={get}>
         <button>Get a code</button>
@@ -76,6 +72,7 @@ function AppCode() {
             <>
               <div>Username: {c().Username}</div>
               <div class="code">{c().Code}</div>
+              <div>It works once, within {Math.round(c().ExpiresIn / 60)} minutes.</div>
             </>
           )}
         </Show>
@@ -93,7 +90,7 @@ function SessionRow(props: { session: api.Session; onRevoked: () => void }) {
       props.onRevoked();
     } catch (err) {
       setBusy(false);
-      alert(`Couldn't sign it out: ${message(err)}`);
+      alert(`Couldn't sign it out: ${api.message(err)}`);
     }
   };
   return (
@@ -113,7 +110,7 @@ function SessionRow(props: { session: api.Session; onRevoked: () => void }) {
   );
 }
 
-function Sessions() {
+function Account() {
   const sessions = createMemo(() => api.sessions());
   const reload = () => refresh(sessions);
   // An app signed in with Quick Connect makes its session once it asks for
@@ -125,7 +122,8 @@ function Sessions() {
     </tr>
   );
   return (
-    <>
+    <main>
+      <h1>Jellyfin apps and sessions</h1>
       <QuickConnect onSignedIn={reloadSoon} />
       <AppCode />
       <section>
@@ -141,7 +139,7 @@ function Sessions() {
             </tr>
           </thead>
           <tbody>
-            <Errored fallback={(err) => note(`Couldn't list sessions: ${message(err())}`)}>
+            <Errored fallback={(err) => note(`Couldn't list sessions: ${api.message(err())}`)}>
               <Loading fallback={note("Loading…")}>
                 <For each={sessions()} keyed={(s) => s.ID} fallback={note("None.")}>
                   {(s) => <SessionRow session={s()} onRevoked={reload} />}
@@ -151,15 +149,6 @@ function Sessions() {
           </tbody>
         </table>
       </section>
-    </>
-  );
-}
-
-function Account() {
-  return (
-    <main>
-      <h1>Jellyfin apps and sessions</h1>
-      <Sessions />
       <p>
         <a href="/web/">Back to Jellyfin</a>
       </p>

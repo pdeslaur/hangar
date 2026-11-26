@@ -3,11 +3,9 @@
 package jellyfintest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -86,7 +84,7 @@ func Start(t *testing.T) *Server {
 	s.docker("start")
 	s.wait()
 
-	key := `MediaBrowser Token="` + Key + `"`
+	key := jellyfin.TokenHeader(Key)
 	var config map[string]any
 	s.call(http.MethodGet, "/System/Configuration", key, nil, &config)
 	config["QuickConnectAvailable"] = true
@@ -115,14 +113,9 @@ func (s *Server) wait() {
 	s.URL = "http://" + strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
 	deadline := time.Now().Add(2 * time.Minute)
 	for {
-		// While it starts, a setup server answers /System/Info/Public and
-		// 503 to the rest, so wait on an anonymous path it doesn't serve.
-		resp, err := http.Get(s.URL + "/Branding/Configuration")
+		err := s.client().Ready(context.Background())
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return
-			}
+			return
 		}
 		if time.Now().After(deadline) {
 			s.t.Fatalf("jellyfin never answered: %v", err)
@@ -138,44 +131,16 @@ func (s *Server) docker(command string) {
 	}
 }
 
+func (s *Server) client() *jellyfin.Client {
+	return &jellyfin.Client{URL: s.URL, HTTP: http.DefaultClient}
+}
+
 // call sends a request to Jellyfin, failing the test unless it answers 2xx,
 // and decodes its JSON response into out, if not nil.
 func (s *Server) call(method, path, authorization string, in, out any) {
 	s.t.Helper()
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			s.t.Fatal(err)
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest(method, s.URL+path, body)
-	if err != nil {
+	if err := s.client().Do(context.Background(), method, path, authorization, in, out); err != nil {
 		s.t.Fatal(err)
-	}
-	if authorization != "" {
-		req.Header.Set("Authorization", authorization)
-	}
-	if in != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		s.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		if len(b) > 256 {
-			b = b[:256]
-		}
-		s.t.Fatalf("%s %s: %d %s", method, path, resp.StatusCode, b)
-	}
-	if out != nil {
-		if err := json.Unmarshal(b, out); err != nil {
-			s.t.Fatalf("decoding %s %s: %v", method, path, err)
-		}
 	}
 }
 
@@ -187,7 +152,7 @@ func Me(t *testing.T, base, token string) (int, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", `MediaBrowser Token="`+token+`"`)
+	req.Header.Set("Authorization", jellyfin.TokenHeader(token))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
