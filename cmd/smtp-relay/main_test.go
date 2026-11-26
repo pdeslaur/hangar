@@ -14,7 +14,7 @@ import (
 	"github.com/emersion/go-smtp"
 	"github.com/pdeslaur/hangar/internal/cloudflarests"
 	"github.com/pdeslaur/hangar/internal/workloadtest"
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
 

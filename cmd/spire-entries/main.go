@@ -9,7 +9,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/hangar/internal/entries"
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 	entryv1 "github.com/spiffe/spire-api-sdk/proto/spire/api/server/entry/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
