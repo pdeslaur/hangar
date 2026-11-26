@@ -20,7 +20,7 @@ import (
 	"github.com/pdeslaur/hangar/internal/jellybridge"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
 	"github.com/pdeslaur/hangar/internal/systemd"
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 )
 
 type config struct {

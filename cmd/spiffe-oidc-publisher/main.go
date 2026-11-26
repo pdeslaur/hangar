@@ -22,7 +22,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/hangar/internal/oidcpublish"
 	"github.com/pdeslaur/hangar/internal/systemd"
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"

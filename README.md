@@ -97,5 +97,7 @@ cosign verify ghcr.io/pdeslaur/<command>:latest \
     --certificate-identity https://github.com/pdeslaur/hangar/.github/workflows/build.yaml@refs/heads/main
 ```
 
-[Dependabot](.github/dependabot.yml) checks for Go module updates daily and for
-GitHub Actions updates weekly.
+[Renovate](https://github.com/pdeslaur/renovate) checks for Go module, npm and
+GitHub Actions updates daily, and its pull requests merge themselves once the
+required checks pass. [`renovate.json`](renovate.json) groups the npm updates
+into one pull request, as its shared configuration does the others.
