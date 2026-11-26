@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -80,17 +81,32 @@ func TestLoginRefuses(t *testing.T) {
 		})
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/sso/login", nil)
-	w := httptest.NewRecorder()
-	l.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfinBridge.signIn") {
-		t.Errorf("GET /sso/login: %d", w.Code)
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		l.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
 	}
-	r = httptest.NewRequest(http.MethodGet, "/sso/bridge.js", nil)
-	w = httptest.NewRecorder()
-	l.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "jellyfin_credentials") {
-		t.Errorf("GET /sso/bridge.js: %d", w.Code)
+	account := get("/sso/")
+	script := regexp.MustCompile(`/sso/assets/account-[^"]+\.js`).FindString(account.Body.String())
+	if account.Code != http.StatusOK || script == "" {
+		t.Fatalf("GET /sso/: %d, no script in %s", account.Code, account.Body)
+	}
+	for _, tc := range []struct {
+		path, has, cache string
+	}{
+		{"/sso/login", "/sso/bridge.js", "no-store"},
+		{"/sso/bridge.js", "jellyfin_credentials", "no-cache"},
+		{script, "/sso/sessions", "public, max-age=31536000, immutable"},
+	} {
+		w := get(tc.path)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), tc.has) || w.Header().Get("Cache-Control") != tc.cache {
+			t.Errorf("GET %s: %d, Cache-Control %q", tc.path, w.Code, w.Header().Get("Cache-Control"))
+		}
+	}
+	for _, path := range []string{"/sso/assets/", "/sso/assets/missing.js", "/sso/assets/../account.html", "/sso/account.html"} {
+		if w := get(path); w.Code < 400 {
+			t.Errorf("GET %s: %d", path, w.Code)
+		}
 	}
 }
 

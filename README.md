@@ -68,7 +68,9 @@ GOFLAGS=-tags=goolm \
 CI runs the tests with the race detector and against tuwunel and Jellyfin,
 and checks that the code is formatted with `gofmt`, that `go.mod` is tidy,
 and that `go vet`, [staticcheck](https://staticcheck.dev) and
-[govulncheck](https://go.dev/doc/security/vuln/) find nothing.
+[govulncheck](https://go.dev/doc/security/vuln/) find nothing. It also
+rebuilds jellyfin-bridge's pages and checks that the committed build matches
+(see [Pages](cmd/jellyfin-bridge/README.md#pages)).
 
 ## Images
 

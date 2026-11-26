@@ -37,6 +37,18 @@ Users sign in only if `USERS` maps them to a Jellyfin user; the bridge creates n
 
 Jellyfin needs Quick Connect enabled, in its dashboard's general settings. It tells systemd it's ready, through `NOTIFY_SOCKET`, once it listens.
 
+## Pages
+
+The pages under `/sso/` are written with [Solid](https://www.solidjs.com) 2 in [`internal/jellybridge/web`](../../internal/jellybridge/web) and built with Vite into its `dist` directory, which the bridge embeds. `dist` is committed, so building the bridge needs no Node; after changing the pages, rebuild it and commit it with them:
+
+```sh
+cd internal/jellybridge/web
+npm ci
+npm run build
+```
+
+CI fails when `dist` isn't what its sources build. `public/bridge.js`, the script the proxy adds to jellyfin-web, is plain JavaScript copied as is: it runs in jellyfin-web's page, beside its own code.
+
 ## Image
 
 `ghcr.io/pdeslaur/jellyfin-bridge`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. See [Images](../../README.md#images) for how it's built and how to verify its signature.

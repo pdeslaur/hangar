@@ -75,6 +75,37 @@ jobs:
                       ~/go/pkg/mod
                   key: ${{ steps.cache.outputs.cache-primary-key }}
 
+    # jellyfin-bridge's pages, built with Node into a dist directory that's
+    # committed for go:embed, so Go builds need no Node. The committed build
+    # has to be what its sources build.
+    web:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: internal/jellybridge/web
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              with:
+                  node-version: 26
+                  cache: npm
+                  cache-dependency-path: internal/jellybridge/web/package-lock.json
+
+            - run: npm ci
+
+            - run: npm run build
+
+            - name: dist is up to date
+              run: |
+                  if [ -n "$(git status --porcelain -- dist)" ]; then
+                      echo "dist isn't what npm run build makes; run it and commit dist:"
+                      git status --porcelain -- dist
+                      exit 1
+                  fi
+
     # Runs tuwunel:latest, so holds no permission to publish.
     test:
         runs-on: ubuntu-latest
@@ -121,7 +152,7 @@ jobs:
                   key: ${{ steps.cache.outputs.cache-primary-key }}
 
     build:
-        needs: [lint, test]
+        needs: [lint, test, web]
         runs-on: ubuntu-latest
         permissions:
             contents: read

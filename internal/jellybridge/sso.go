@@ -2,26 +2,19 @@ package jellybridge
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"mime"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/chainguard-dev/clog"
+	"github.com/pdeslaur/hangar/internal/jellybridge/web"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
 )
-
-//go:embed login.html
-var loginPage []byte
-
-//go:embed account.html
-var accountPage []byte
-
-//go:embed bridge.js
-var bridgeScript []byte
 
 // maxRequest bounds the body of a request to /sso/.
 const maxRequest = 4 << 10
@@ -39,6 +32,7 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 //
 //   - GET /sso/login, a page that asks for a session for jellyfin-web's
 //     device ID and stores its token where jellyfin-web reads it.
+//   - GET /sso/assets/…, the pages' scripts and styles, from web.
 //   - GET /sso/bridge.js, the script signing jellyfin-web in and keeping
 //     it signed in, which the Proxy adds to jellyfin-web.
 //   - POST /sso/session, taking {"DeviceId": …} and answering a bridge
@@ -79,15 +73,19 @@ type SSO struct {
 }
 
 func (s *SSO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	get := func(contentType, cache string, body []byte) {
+	// get serves the file name of web.FS.
+	get := func(name, cache string) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		w.Header().Set("Content-Type", contentType)
+		if info, err := fs.Stat(web.FS, name); err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", cache)
-		w.Write(body)
+		http.ServeFileFS(w, r, web.FS, name)
 	}
 	post := func(serve func(http.ResponseWriter, *http.Request, user)) {
 		if r.Method != http.MethodPost {
@@ -111,13 +109,17 @@ func (s *SSO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if name, ok := strings.CutPrefix(r.URL.Path, "/sso/assets/"); ok {
+		get("assets/"+name, "public, max-age=31536000, immutable")
+		return
+	}
 	switch r.URL.Path {
 	case "/sso/login":
-		get("text/html; charset=utf-8", "no-store", loginPage)
+		get("login.html", "no-store")
 	case "/sso/":
-		get("text/html; charset=utf-8", "no-store", accountPage)
+		get("account.html", "no-store")
 	case "/sso/bridge.js":
-		get("text/javascript; charset=utf-8", "no-cache", bridgeScript)
+		get("bridge.js", "no-cache")
 	case "/sso/session":
 		post(s.serveSession)
 	case "/sso/quickconnect":
