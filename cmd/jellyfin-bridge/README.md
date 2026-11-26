@@ -19,7 +19,7 @@ The bridge does no OIDC itself: the reverse proxy signs users in and tells the b
 
 1. **The identity provider.** Register an OIDC client for the reverse proxy, its redirect URI under `/sso/` (`/sso/callback` below), and limit it to the users allowed Jellyfin, like a group: without `USERS`, whoever signs in gets the Jellyfin user of the same name.
 2. **Jellyfin.** Make the users, with the identity provider's usernames, or map them with `USERS`. Enable Quick Connect in the dashboard's general settings. Have it listen on loopback alone, under Networking, so only the bridge, in the same pod or network namespace, reaches it, and publish no port of its own.
-3. **The bridge.** Run it beside Jellyfin, with Jellyfin's `/config` mounted for `JELLYFIN_DB`, and a volume for `STATE`.
+3. **The bridge.** Run it beside Jellyfin, with Jellyfin's `/config` mounted read-write for `JELLYFIN_DB`. It keeps its sessions beside Jellyfin's database, so they're backed up and restored with it.
 4. **The reverse proxy.** Send everything to the bridge. On `/sso/*`, sign users in and set `USER_HEADER` to their username. Everywhere, remove a client's own `USER_HEADER`. With Caddy and [caddy-pocketid](https://github.com/pdeslaur/caddy-pocketid):
 
    ```caddyfile
@@ -65,7 +65,7 @@ With `USERS`, only the users it maps sign in, as the Jellyfin users it names. Wi
 | Variable | Default | |
 |---|---|---|
 | `JELLYFIN_DB` | | Jellyfin's database, like `/config/data/data/jellyfin.db`. Required. |
-| `STATE` | | Its own database, of sessions. Required. |
+| `STATE` | `jellyfin-bridge.db` beside `JELLYFIN_DB` | Its own database, of sessions. It has to last across restarts: losing it signs every client out. |
 | `ADDR` | `127.0.0.1:8097` | Where it listens: the reverse proxy's upstream. |
 | `JELLYFIN_URL` | `http://127.0.0.1:8096` | Jellyfin. |
 | `API_KEY_NAME` | `jellyfin-bridge` | Its API key's name in Jellyfin. |

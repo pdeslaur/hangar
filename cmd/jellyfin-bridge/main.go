@@ -6,6 +6,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -35,8 +37,9 @@ type config struct {
 	JellyfinDB string `env:"JELLYFIN_DB,required"`
 	// APIKeyName is its API key's name in Jellyfin.
 	APIKeyName string `env:"API_KEY_NAME,default=jellyfin-bridge"`
-	// State is its own database, of sessions.
-	State string `env:"STATE,required"`
+	// State is its own database, of sessions: jellyfin-bridge.db beside
+	// JellyfinDB unless set, kept and backed up with Jellyfin's.
+	State string `env:"STATE"`
 	// UserHeader is the header the reverse proxy names the signed-in user
 	// in, on requests to /sso/.
 	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
@@ -113,7 +116,8 @@ func run(ctx context.Context, cfg *config) error {
 		}
 	}
 
-	sessions, err := jellybridge.Open(ctx, cfg.State, cfg.Idle)
+	state := cmp.Or(cfg.State, filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-bridge.db"))
+	sessions, err := jellybridge.Open(ctx, state, cfg.Idle)
 	if err != nil {
 		return err
 	}
