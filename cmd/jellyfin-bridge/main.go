@@ -137,14 +137,16 @@ func run(ctx context.Context, cfg *config) error {
 
 	mux := http.NewServeMux()
 	apps := jellybridge.NewApps(sessions, client)
-	mux.Handle("/sso/", &jellybridge.SSO{
+	sso := &jellybridge.SSO{
 		Apps:          apps,
 		ServerID:      serverID,
 		UserHeader:    cfg.UserHeader,
 		Users:         cfg.Users,
 		BrowserTTL:    cfg.BrowserTTL,
 		RefreshBefore: cfg.RefreshBefore,
-	})
+	}
+	mux.Handle("/sso/", sso)
+	mux.Handle("/sso-static/", sso)
 	mux.Handle("/", jellybridge.NewProxy(target, apps))
 
 	lis, err := net.Listen("tcp", cfg.Addr)

@@ -6,28 +6,27 @@ Puts [Jellyfin](https://jellyfin.org) behind single sign-on, apps included. It r
 
 ```mermaid
 flowchart LR
-    client["Browsers and apps"] -->|HTTPS| proxy["Reverse proxy<br>(signs in on /sso/ pages)"]
+    client["Browsers and apps"] -->|HTTPS| proxy["Reverse proxy<br>(signs in on /sso/*)"]
     proxy <-.->|OIDC| idp["Identity provider"]
     subgraph pod["Jellyfin's pod"]
         bridge["jellyfin-bridge<br>127.0.0.1:8097"] -->|"Jellyfin token"| jellyfin["Jellyfin<br>127.0.0.1:8096"]
         bridge --- state[("sessions")]
     end
-    proxy -->|"/sso/ pages: X-Bridge-User<br>else: bridge token"| bridge
+    proxy -->|"/sso/*: X-Bridge-User<br>else: bridge token"| bridge
 ```
 
-The bridge does no OIDC itself: the reverse proxy signs users in and tells the bridge who they are in a header, on its pages and calls under `/sso/` alone. Its static files, `/sso/bridge.js` and `/sso/assets/*`, mustn't need a sign-on: jellyfin-web loads `bridge.js` before anyone has signed in, and it's what sends them to `/sso/login`. Every other path goes to the bridge without a sign-on, since apps can't do one: their requests carry a bridge token instead.
+The bridge does no OIDC itself: the reverse proxy signs users in and tells the bridge who they are in a header, on `/sso/*` alone. Every other path, `/sso-static/*` included, goes to the bridge without a sign-on, since apps can't do one: their requests carry a bridge token instead. `/sso-static/` holds the pages' scripts and styles, and `bridge.js`, which jellyfin-web loads before anyone has signed in: it's what sends them to `/sso/login`.
 
 1. **The identity provider.** Register an OIDC client for the reverse proxy, its redirect URI under `/sso/` (`/sso/callback` below), and limit it to the users allowed Jellyfin, like a group: without `USERS`, whoever signs in gets the Jellyfin user of the same name.
 2. **Jellyfin.** Make the users, with the identity provider's usernames, or map them with `USERS`. Enable Quick Connect in the dashboard's general settings. Have it listen on loopback alone, under Networking, so only the bridge, in the same pod or network namespace, reaches it, and publish no port of its own.
 3. **The bridge.** Run it beside Jellyfin, with Jellyfin's `/config` mounted read-write for `JELLYFIN_DB`. It keeps its sessions beside Jellyfin's database, so they're backed up and restored with it.
-4. **The reverse proxy.** Send everything to the bridge. On `/sso/`, `/sso/login`, `/sso/sessions`, `/sso/session`, `/sso/quickconnect`, `/sso/code` and `/sso/revoke`, sign users in and set `USER_HEADER` to their username; a path left out answers 403, for want of the header. Everywhere, remove a client's own `USER_HEADER`. With Caddy and [caddy-pocketid](https://github.com/pdeslaur/caddy-pocketid):
+4. **The reverse proxy.** Send everything to the bridge. On `/sso/*`, sign users in and set `USER_HEADER` to their username. Everywhere, remove a client's own `USER_HEADER`. With Caddy and [caddy-pocketid](https://github.com/pdeslaur/caddy-pocketid):
 
    ```caddyfile
    jellyfin.example.com {
        request_header -X-Bridge-User
 
-       @signin path /sso/ /sso/login /sso/sessions /sso/session /sso/quickconnect /sso/code /sso/revoke /sso/callback
-       route @signin {
+       route /sso/* {
            pocketid_auth {
                issuer        https://id.example.com
                client_id     {$POCKETID_CLIENT_ID}
@@ -49,7 +48,7 @@ The bridge does no OIDC itself: the reverse proxy signs users in and tells the b
 
 - **Tokens.** Jellyfin's access tokens are opaque strings it looks up, in its devices and then its API keys; nothing outside it can mint one. The bridge gets them from Jellyfin's own API with an API key, logging a device in as any user through Quick Connect, and keeps them in sessions, one per user's device, in a SQLite file of its own. A client gets a bridge token, kept only as its hash.
 - **The proxy.** On every request, the bridge removes every token, wherever Jellyfin would read one (the `Authorization` header's `Token`, `X-Emby-Authorization`, `X-Emby-Token`, `X-MediaBrowser-Token`, and `ApiKey` or `api_key` in the query in any case), in Jellyfin's order and with its parsing. If it found a live bridge token, it sends Jellyfin that session's Jellyfin token in an `Authorization` header; otherwise none. A Jellyfin token sent to the bridge reaches Jellyfin as no token at all.
-- **Browsers.** `GET /sso/login` names the browser by jellyfin-web's own device ID, gets a token from `POST /sso/session`, and stores it where jellyfin-web reads its credentials. The bridge adds a script to jellyfin-web's page, `/sso/bridge.js`, which refreshes the token before it expires, `REFRESH_BEFORE` ahead, and sends jellyfin-web's own login page to `/sso/login`. A browser's tokens last `BROWSER_TTL`; its session, and the Jellyfin token in it, stay across refreshes.
+- **Browsers.** `GET /sso/login` names the browser by jellyfin-web's own device ID, gets a token from `POST /sso/session`, and stores it where jellyfin-web reads its credentials. The bridge adds a script to jellyfin-web's page, `/sso-static/bridge.js`, which refreshes the token before it expires, `REFRESH_BEFORE` ahead, and sends jellyfin-web's own login page to `/sso/login`. A browser's tokens last `BROWSER_TTL`; its session, and the Jellyfin token in it, stay across refreshes.
 - **Apps.** Their tokens last until revoked. An app with Quick Connect uses Jellyfin's own, its code approved on the account page or in jellyfin-web; the bridge replaces the Jellyfin token in the result with its own. An app asking for a password, like Infuse, takes a one-time code from the account page as the password: the bridge answers `POST /Users/AuthenticateByName` itself, so Jellyfin's passwords never work through it. A code lasts 10 minutes, works once, and is voided after 5 wrong guesses. The obsolete `POST /Users/{id}/Authenticate` and the password resets are refused.
 - **The account page.** `/sso/` approves Quick Connect codes, gives one-time codes, and lists the user's sessions, each with a button ending it.
 - **Ending sessions.** A session unused for `IDLE` ends: every `SWEEP_EVERY`, the bridge logs its Jellyfin token out and deletes it. Logging out with the token ends it alone, where deleting its device would end every user's tokens on the same device ID, as on a shared browser.
@@ -57,7 +56,7 @@ The bridge does no OIDC itself: the reverse proxy signs users in and tells the b
 
 ## Trust
 
-The reverse proxy in front of it has to sign users in on the bridge's pages and calls under `/sso/`, all but its static files, `/sso/bridge.js` and `/sso/assets/*`, and set `USER_HEADER` there, removing a client's own; on other paths, the bridge never reads it. Jellyfin has to listen where only the bridge reaches it, on loopback: anything else in the pod can use the bridge's API key, and anything reaching Jellyfin directly bypasses the bridge. The bridge's `POST` endpoints take JSON alone, which another site's form can't send, and refuse requests whose `Sec-Fetch-Site` isn't `same-origin`.
+The reverse proxy in front of it has to sign users in on every path under `/sso/`, and none under `/sso-static/`, and set `USER_HEADER` there, removing a client's own; on other paths, the bridge never reads it. Jellyfin has to listen where only the bridge reaches it, on loopback: anything else in the pod can use the bridge's API key, and anything reaching Jellyfin directly bypasses the bridge. The bridge's `POST` endpoints take JSON alone, which another site's form can't send, and refuse requests whose `Sec-Fetch-Site` isn't `same-origin`.
 
 With `USERS`, only the users it maps sign in, as the Jellyfin users it names. Without it, every user the sign-on lets through signs in as the Jellyfin user of the same name, compared without case, so the identity provider decides who gets in. Either way, the bridge creates no Jellyfin user.
 
