@@ -6,13 +6,17 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -28,20 +32,21 @@ type config struct {
 	Addr string `env:"ADDR,default=127.0.0.1:8097"`
 	// JellyfinURL is Jellyfin's, which nothing else should reach.
 	JellyfinURL string `env:"JELLYFIN_URL,default=http://127.0.0.1:8096"`
-	// JellyfinDB is Jellyfin's database, where it writes its API key.
+	// JellyfinDB is Jellyfin's database, where it writes its API key, a
+	// random one each time it starts.
 	JellyfinDB string `env:"JELLYFIN_DB,required"`
-	// APIKey is its API key's token, which it writes into JellyfinDB.
-	APIKey string `env:"API_KEY,required"`
 	// APIKeyName is its API key's name in Jellyfin.
 	APIKeyName string `env:"API_KEY_NAME,default=jellyfin-bridge"`
-	// State is its own database, of sessions.
-	State string `env:"STATE,required"`
+	// State is its own database, of sessions: jellyfin-bridge.db beside
+	// JellyfinDB unless set, kept and backed up with Jellyfin's.
+	State string `env:"STATE"`
 	// UserHeader is the header the reverse proxy names the signed-in user
 	// in, on requests to /sso/.
 	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
 	// Users maps a signed-in user to their Jellyfin username, like
-	// "phil:Phil,anna:Anna".
-	Users map[string]string `env:"USERS,required"`
+	// "phil:Phil,anna:Anna", and only they sign in. Without it, a signed-in
+	// user's name is their Jellyfin username.
+	Users map[string]string `env:"USERS"`
 	// BrowserTTL is how long a browser's token lasts.
 	BrowserTTL time.Duration `env:"BROWSER_TTL,default=8h"`
 	// RefreshBefore is how long before its token expires a browser
@@ -85,15 +90,19 @@ func run(ctx context.Context, cfg *config) error {
 	if err != nil {
 		return err
 	}
+	// A key of its own, replacing the one it wrote before: it never leaves
+	// the bridge, and sessions don't depend on it.
+	key := make([]byte, 16)
+	rand.Read(key)
 	client := &jellyfin.Client{
 		URL:  cfg.JellyfinURL,
-		Key:  cfg.APIKey,
+		Key:  hex.EncodeToString(key),
 		HTTP: &http.Client{Timeout: 30 * time.Second},
 	}
 	if err := waitForJellyfin(ctx, client); err != nil {
 		return err
 	}
-	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, cfg.APIKey); err != nil {
+	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key); err != nil {
 		return err
 	}
 	serverID, err := client.ServerID(ctx)
@@ -107,7 +116,8 @@ func run(ctx context.Context, cfg *config) error {
 		}
 	}
 
-	sessions, err := jellybridge.Open(ctx, cfg.State, cfg.Idle)
+	state := cmp.Or(cfg.State, filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-bridge.db"))
+	sessions, err := jellybridge.Open(ctx, state, cfg.Idle)
 	if err != nil {
 		return err
 	}

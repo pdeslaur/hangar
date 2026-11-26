@@ -94,6 +94,9 @@ func IsStatus(err error, status int) bool {
 	return errors.As(err, &se) && se.Status == status
 }
 
+// ErrNoUser is UserID's error for a user Jellyfin doesn't have.
+var ErrNoUser = errors.New("jellyfin: no such user")
+
 // UserID returns the ID of the user called name, compared without case, as
 // Jellyfin compares usernames.
 func (c *Client) UserID(ctx context.Context, name string) (string, error) {
@@ -109,7 +112,7 @@ func (c *Client) UserID(ctx context.Context, name string) (string, error) {
 			return u.ID, nil
 		}
 	}
-	return "", fmt.Errorf("jellyfin: no user %q", name)
+	return "", fmt.Errorf("%w: %q", ErrNoUser, name)
 }
 
 // Ready returns nil once Jellyfin has started. While it starts, a setup

@@ -56,7 +56,9 @@ type SSO struct {
 	// UserHeader is the request header naming the signed-in user.
 	UserHeader string
 	// Users maps a signed-in user's name to their Jellyfin username. A user
-	// missing from it can't sign in.
+	// missing from it can't sign in. Without it, a signed-in user's name is
+	// their Jellyfin username, and only the single sign-on decides who signs
+	// in.
 	Users map[string]string
 	// BrowserTTL is how long a browser's token lasts.
 	BrowserTTL time.Duration
@@ -138,13 +140,20 @@ type user struct {
 func (s *SSO) user(w http.ResponseWriter, r *http.Request) (user, bool) {
 	ctx := r.Context()
 	name := r.Header.Get(s.UserHeader)
-	username, ok := s.Users[name]
-	if name == "" || !ok {
+	username, ok := name, true
+	if len(s.Users) > 0 {
+		username, ok = s.Users[name]
+	}
+	var id string
+	var err error
+	if name != "" && ok {
+		id, err = s.Apps.Jellyfin.UserID(ctx, username)
+	}
+	if name == "" || !ok || errors.Is(err, jellyfin.ErrNoUser) {
 		clog.WarnContext(ctx, "an unknown user", "user", name)
 		http.Error(w, "no Jellyfin user for "+name, http.StatusForbidden)
 		return user{}, false
 	}
-	id, err := s.Apps.Jellyfin.UserID(ctx, username)
 	if err != nil {
 		clog.ErrorContext(ctx, "finding a Jellyfin user", "user", name, "username", username, "error", err)
 		http.Error(w, "Jellyfin unavailable", http.StatusBadGateway)

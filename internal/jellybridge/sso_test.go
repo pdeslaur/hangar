@@ -80,6 +80,12 @@ func TestLoginRefuses(t *testing.T) {
 		})
 	}
 
+	// Without Users, a name Jellyfin doesn't know.
+	unmapped := &SSO{Apps: l.Apps, UserHeader: userHeader, BrowserTTL: 8 * time.Hour}
+	if w := postSession(t, unmapped, "mallory", "dev1", nil); w.Code != http.StatusForbidden {
+		t.Errorf("an unknown user without Users: status %d, want %d: %s", w.Code, http.StatusForbidden, w.Body)
+	}
+
 	get := func(path string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		l.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
@@ -175,5 +181,16 @@ func TestLoginJellyfin(t *testing.T) {
 	}
 	if session, err := store.Lookup(ctx, other.AccessToken); err != nil || session.Device.ID != "browser-2" {
 		t.Errorf("the second browser's session: %+v, %v", session, err)
+	}
+
+	// Without Users, the signed-in name is the Jellyfin username.
+	unmapped := &SSO{Apps: apps, ServerID: "server1", UserHeader: userHeader, BrowserTTL: 8 * time.Hour, RefreshBefore: time.Hour}
+	w := postSession(t, unmapped, "alice", "browser-3", nil)
+	var resp sessionResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &resp) != nil || resp.UserID != s.Users["alice"] {
+		t.Fatalf("POST /sso/session without Users: %d %s", w.Code, w.Body)
+	}
+	if status, name := jellyfintest.Me(t, proxy.URL, resp.AccessToken); status != http.StatusOK || name != "alice" {
+		t.Errorf("/Users/Me signed in without Users: %d %q", status, name)
 	}
 }
