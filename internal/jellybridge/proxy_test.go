@@ -124,9 +124,14 @@ func TestProxy(t *testing.T) {
 func TestProxyAddsScript(t *testing.T) {
 	const page = `<!DOCTYPE html><html><head><title>Jellyfin</title></head><body></body></html>`
 	const headless = `<html><body></body></html>`
-	// Like Jellyfin, it compresses what it can.
+	// Like Jellyfin, it compresses what it can, and lets a browser keep its
+	// copy.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Etag", `"abc"`)
+		if r.Header.Get("If-None-Match") == `"abc"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html")
 		body := page
 		if r.URL.Query().Has("headless") {
@@ -148,19 +153,27 @@ func TestProxyAddsScript(t *testing.T) {
 
 	withScript := `<!DOCTYPE html><html><head><title>Jellyfin</title>` + scriptTag + `</head><body></body></html>`
 	for _, tc := range []struct {
-		path, want string
-		changed    bool
-		encoding   string
+		name, path, want string
+		changed          bool
+		encoding         string
+		// cached is the ETag of a copy the browser holds.
+		cached string
 	}{
-		{"/web/", withScript, true, ""},
-		{"/web/index.html", withScript, true, ""},
-		{"/web/index.html?headless", headless, false, ""},
+		{"page", "/web/", withScript, true, "", ""},
+		{"index", "/web/index.html", withScript, true, "", ""},
+		// A copy from before the bridge: the whole page again, with the
+		// script.
+		{"cached page", "/web/", withScript, true, "", `"abc"`},
+		{"headless", "/web/index.html?headless", headless, false, "", ""},
 		// Anything else passes as it came, compressed.
-		{"/web/other.html", page, false, "gzip"},
+		{"another", "/web/other.html", page, false, "gzip", ""},
 	} {
-		t.Run(tc.path, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			r := httptest.NewRequest(http.MethodGet, tc.path, nil)
 			r.Header.Set("Accept-Encoding", "gzip")
+			if tc.cached != "" {
+				r.Header.Set("If-None-Match", tc.cached)
+			}
 			w := httptest.NewRecorder()
 			p.ServeHTTP(w, r)
 			resp := w.Result()

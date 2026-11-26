@@ -67,8 +67,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	r = r.Clone(ctx)
 	if isWebPage(r) {
-		// Uncompressed, for addScript to change.
-		r.Header.Del("Accept-Encoding")
+		// Whole and uncompressed, for addScript to change: a browser may hold
+		// a copy from before the bridge, which Jellyfin would let it keep.
+		for _, h := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
+			r.Header.Del(h)
+		}
 	}
 	c := takeCredentials(r)
 	session, err := p.sessions.Lookup(ctx, c.token)
