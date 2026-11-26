@@ -40,8 +40,9 @@ type config struct {
 	// in, on requests to /sso/.
 	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
 	// Users maps a signed-in user to their Jellyfin username, like
-	// "phil:Phil,anna:Anna".
-	Users map[string]string `env:"USERS,required"`
+	// "phil:Phil,anna:Anna", and only they sign in. Without it, a signed-in
+	// user's name is their Jellyfin username.
+	Users map[string]string `env:"USERS"`
 	// BrowserTTL is how long a browser's token lasts.
 	BrowserTTL time.Duration `env:"BROWSER_TTL,default=8h"`
 	// RefreshBefore is how long before its token expires a browser
