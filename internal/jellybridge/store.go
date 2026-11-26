@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"net/url"
@@ -12,6 +11,9 @@ import (
 	"time"
 
 	"github.com/pdeslaur/hangar/internal/jellyfin"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	_ "modernc.org/sqlite"
 )
 
@@ -28,53 +30,39 @@ const (
 // Session is one user's device: the Jellyfin token the bridge holds for it,
 // and the bridge tokens it handed out for it.
 type Session struct {
-	ID   string
-	Kind Kind
+	ID   string `gorm:"primaryKey"`
+	Kind Kind   `gorm:"not null"`
 	// UserID and Username are the Jellyfin user's.
-	UserID   string
-	Username string
+	UserID   string `gorm:"not null"`
+	Username string `gorm:"not null"`
 	// Device is as the bridge logged it in to Jellyfin.
-	Device jellyfin.Device
+	Device jellyfin.Device `gorm:"embedded;embeddedPrefix:device_"`
 	// JellyfinToken is the device's Jellyfin access token, which never
 	// leaves the bridge.
-	JellyfinToken string
-	Created       time.Time
+	JellyfinToken string    `gorm:"not null"`
+	Created       time.Time `gorm:"not null"`
 	// LastUsed is when a request last carried one of its tokens, to within
 	// touchEvery.
-	LastUsed time.Time
+	LastUsed time.Time `gorm:"not null"`
+}
+
+// token is a bridge token, kept as its SHA-256 hash so the database doesn't
+// hold bridge tokens.
+type token struct {
+	Hash      []byte   `gorm:"primaryKey"`
+	SessionID string   `gorm:"not null;index"`
+	Session   *Session `gorm:"constraint:OnDelete:CASCADE"`
+	// Expires is nil for a token that never expires.
+	Expires *time.Time
 }
 
 // touchEvery is how often a session's LastUsed is written while in use:
 // a video plays as many requests.
 const touchEvery = 5 * time.Minute
 
-const schema = `
-CREATE TABLE IF NOT EXISTS sessions (
-	id             TEXT PRIMARY KEY,
-	kind           TEXT NOT NULL,
-	user_id        TEXT NOT NULL,
-	username       TEXT NOT NULL,
-	client         TEXT NOT NULL,
-	device_name    TEXT NOT NULL,
-	device_id      TEXT NOT NULL,
-	version        TEXT NOT NULL,
-	jellyfin_token TEXT NOT NULL,
-	created        INTEGER NOT NULL,
-	last_used      INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS tokens (
-	hash       BLOB PRIMARY KEY,
-	session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-	-- Unix seconds; NULL never expires.
-	expires    INTEGER
-);
-CREATE INDEX IF NOT EXISTS tokens_session ON tokens (session_id);
-`
-
-// Store keeps sessions and their tokens in a SQLite database. A token is
-// kept as its SHA-256 hash, so the database doesn't hold bridge tokens.
+// Store keeps sessions and their tokens in a SQLite database.
 type Store struct {
-	db *sql.DB
+	db *gorm.DB
 	// Idle is how long a session lasts without use.
 	Idle time.Duration
 	// now is the time, replaced in tests.
@@ -92,20 +80,28 @@ func Open(ctx context.Context, path string, idle time.Duration) (*Store, error) 
 		Path:     path,
 		RawQuery: "_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)",
 	}).String()
-	db, err := sql.Open("sqlite", dsn)
+	db, err := gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: dsn}), &gorm.Config{
+		Logger:                 logger.Discard,
+		SkipDefaultTransaction: true,
+	})
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
-		db.Close()
+	s := &Store{db: db, Idle: idle, now: time.Now, touched: map[string]time.Time{}}
+	if err := db.WithContext(ctx).AutoMigrate(&Session{}, &token{}); err != nil {
+		s.Close()
 		return nil, err
 	}
-	return &Store{db: db, Idle: idle, now: time.Now, touched: map[string]time.Time{}}, nil
+	return s, nil
 }
 
 // Close closes its database.
 func (s *Store) Close() error {
-	return s.db.Close()
+	db, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return db.Close()
 }
 
 // randomHex returns n random bytes in hex.
@@ -127,13 +123,7 @@ func (s *Store) CreateSession(ctx context.Context, session Session) (Session, er
 	session.ID = randomHex(16)
 	session.Created = now
 	session.LastUsed = now
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO sessions (id, kind, user_id, username, client, device_name, device_id, version, jellyfin_token, created, last_used)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		session.ID, session.Kind, session.UserID, session.Username,
-		session.Device.Client, session.Device.Name, session.Device.ID, session.Device.Version,
-		session.JellyfinToken, now.Unix(), now.Unix())
-	if err != nil {
+	if err := s.db.WithContext(ctx).Create(&session).Error; err != nil {
 		return Session{}, err
 	}
 	return session, nil
@@ -143,21 +133,36 @@ func (s *Store) CreateSession(ctx context.Context, session Session) (Session, er
 // until its session ends if ttl is 0. Like Jellyfin's own, it is 32 hex
 // digits.
 func (s *Store) IssueToken(ctx context.Context, id string, ttl time.Duration) (string, error) {
-	token := randomHex(16)
-	var expires any
+	t := randomHex(16)
+	row := token{Hash: hashToken(t), SessionID: id}
 	if ttl > 0 {
-		expires = s.now().Add(ttl).Unix()
+		expires := s.now().Add(ttl).UTC()
+		row.Expires = &expires
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO tokens (hash, session_id, expires) VALUES (?, ?, ?)`,
-		hashToken(token), id, expires)
-	if err != nil {
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return "", err
 	}
-	return token, nil
+	return t, nil
 }
 
 // errNoSession is a token that names no live session.
 var errNoSession = errors.New("jellybridge: no session")
+
+// live limits a query of sessions to those used within Idle.
+func (s *Store) live(db *gorm.DB) *gorm.DB {
+	return db.Where("sessions.last_used > ?", s.now().Add(-s.Idle).UTC())
+}
+
+// first returns the first session db selects, and errNoSession if there's
+// none.
+func first(db *gorm.DB) (Session, error) {
+	var session Session
+	err := db.Take(&session).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return Session{}, errNoSession
+	}
+	return session, err
+}
 
 // Lookup returns the session of token, if the token hasn't expired and its
 // session hasn't been idle past Idle, and errNoSession otherwise.
@@ -165,51 +170,39 @@ func (s *Store) Lookup(ctx context.Context, token string) (Session, error) {
 	if token == "" {
 		return Session{}, errNoSession
 	}
-	now := s.now()
-	session, err := scanSession(s.db.QueryRowContext(ctx, `
-		SELECT `+sessionColumns+`
-		FROM tokens t JOIN sessions s ON s.id = t.session_id
-		WHERE t.hash = ? AND (t.expires IS NULL OR t.expires > ?) AND s.last_used > ?`,
-		hashToken(token), now.Unix(), now.Add(-s.Idle).Unix()))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Session{}, errNoSession
-	}
-	return session, err
+	return first(s.db.WithContext(ctx).Scopes(s.live).
+		Joins("JOIN tokens ON tokens.session_id = sessions.id").
+		Where("tokens.hash = ?", hashToken(token)).
+		Where("tokens.expires IS NULL OR tokens.expires > ?", s.now().UTC()))
 }
 
 // FindSession returns the live session of kind for the Jellyfin user
 // userID on the device deviceID, and errNoSession if there's none.
 func (s *Store) FindSession(ctx context.Context, kind Kind, userID, deviceID string) (Session, error) {
-	session, err := scanSession(s.db.QueryRowContext(ctx, `
-		SELECT `+sessionColumns+`
-		FROM sessions s
-		WHERE s.kind = ? AND s.user_id = ? AND s.device_id = ? AND s.last_used > ?
-		ORDER BY s.last_used DESC LIMIT 1`,
-		kind, userID, deviceID, s.now().Add(-s.Idle).Unix()))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Session{}, errNoSession
-	}
-	return session, err
+	return first(s.db.WithContext(ctx).Scopes(s.live).
+		Where(&Session{Kind: kind, UserID: userID, Device: jellyfin.Device{ID: deviceID}}).
+		Order("last_used DESC"))
 }
 
 // UserSessions returns the Jellyfin user userID's live sessions, the most
 // recently used first.
 func (s *Store) UserSessions(ctx context.Context, userID string) ([]Session, error) {
-	return s.query(ctx, `
-		SELECT `+sessionColumns+`
-		FROM sessions s WHERE s.user_id = ? AND s.last_used > ?
-		ORDER BY s.last_used DESC`,
-		userID, s.now().Add(-s.Idle).Unix())
+	var sessions []Session
+	err := s.db.WithContext(ctx).Scopes(s.live).
+		Where(&Session{UserID: userID}).
+		Order("last_used DESC").
+		Find(&sessions).Error
+	return sessions, err
 }
 
 // DeleteDeviceSessions deletes the user userID's sessions of kind on the
 // device deviceID, returning them: Jellyfin has ended their tokens when it
 // logged the device in again.
 func (s *Store) DeleteDeviceSessions(ctx context.Context, kind Kind, userID, deviceID string) ([]Session, error) {
-	sessions, err := s.query(ctx, `
-		SELECT `+sessionColumns+`
-		FROM sessions s WHERE s.kind = ? AND s.user_id = ? AND s.device_id = ?`,
-		kind, userID, deviceID)
+	var sessions []Session
+	err := s.db.WithContext(ctx).
+		Where(&Session{Kind: kind, UserID: userID, Device: jellyfin.Device{ID: deviceID}}).
+		Find(&sessions).Error
 	if err != nil {
 		return nil, err
 	}
@@ -219,24 +212,6 @@ func (s *Store) DeleteDeviceSessions(ctx context.Context, kind Kind, userID, dev
 		}
 	}
 	return sessions, nil
-}
-
-// query returns the sessions a query of sessionColumns selects.
-func (s *Store) query(ctx context.Context, query string, args ...any) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sessions []Session
-	for rows.Next() {
-		session, err := scanSession(rows)
-		if err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, session)
-	}
-	return sessions, rows.Err()
 }
 
 // Touch records that the session id is in use, writing it at most every
@@ -250,40 +225,22 @@ func (s *Store) Touch(ctx context.Context, id string) error {
 	}
 	s.touched[id] = now
 	s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used = ? WHERE id = ?`, now.Unix(), id)
-	return err
+	return s.db.WithContext(ctx).Model(&Session{ID: id}).Update("last_used", now.UTC()).Error
 }
 
 // IdleSessions returns the sessions idle past Idle, which the caller logs
 // out of Jellyfin and deletes.
 func (s *Store) IdleSessions(ctx context.Context) ([]Session, error) {
-	return s.query(ctx, `
-		SELECT `+sessionColumns+`
-		FROM sessions s WHERE s.last_used <= ?`, s.now().Add(-s.Idle).Unix())
-}
-
-// sessionColumns are a session's columns, of the table aliased s, in the
-// order scanSession reads them.
-const sessionColumns = `s.id, s.kind, s.user_id, s.username, s.client, s.device_name, s.device_id, s.version, s.jellyfin_token, s.created, s.last_used`
-
-// scanSession reads a row of sessionColumns.
-func scanSession(row interface{ Scan(...any) error }) (Session, error) {
-	var session Session
-	var created, lastUsed int64
-	err := row.Scan(&session.ID, &session.Kind, &session.UserID, &session.Username,
-		&session.Device.Client, &session.Device.Name, &session.Device.ID, &session.Device.Version,
-		&session.JellyfinToken, &created, &lastUsed)
-	if err != nil {
-		return Session{}, err
-	}
-	session.Created = time.Unix(created, 0).UTC()
-	session.LastUsed = time.Unix(lastUsed, 0).UTC()
-	return session, nil
+	var sessions []Session
+	err := s.db.WithContext(ctx).
+		Where("last_used <= ?", s.now().Add(-s.Idle).UTC()).
+		Find(&sessions).Error
+	return sessions, err
 }
 
 // DeleteSession deletes the session id and its tokens.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id); err != nil {
+	if err := s.db.WithContext(ctx).Delete(&Session{ID: id}).Error; err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -294,6 +251,7 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 
 // DeleteExpiredTokens deletes the tokens past their expiry.
 func (s *Store) DeleteExpiredTokens(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE expires IS NOT NULL AND expires <= ?`, s.now().Unix())
-	return err
+	return s.db.WithContext(ctx).
+		Where("expires IS NOT NULL AND expires <= ?", s.now().UTC()).
+		Delete(&token{}).Error
 }

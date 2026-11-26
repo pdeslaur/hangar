@@ -149,7 +149,7 @@ func TestLoginJellyfin(t *testing.T) {
 		}
 	}
 	var sessions int
-	if err := store.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&sessions); err != nil || sessions != 1 {
+	if err := store.db.Raw(`SELECT count(*) FROM sessions`).Row().Scan(&sessions); err != nil || sessions != 1 {
 		t.Errorf("sessions after a refresh: %d, %v", sessions, err)
 	}
 

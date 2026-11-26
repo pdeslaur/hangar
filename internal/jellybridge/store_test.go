@@ -87,7 +87,7 @@ func TestStoreTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := s.db.QueryRow(`SELECT count(*) FROM tokens`).Scan(&n); err != nil || n != 1 {
+	if err := s.db.Raw(`SELECT count(*) FROM tokens`).Row().Scan(&n); err != nil || n != 1 {
 		t.Errorf("tokens left after DeleteExpiredTokens: %d, %v", n, err)
 	}
 }
@@ -125,7 +125,7 @@ func TestStoreIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int
-	if err := s.db.QueryRow(`SELECT count(*) FROM tokens WHERE session_id = ?`, unused.ID).Scan(&n); err != nil || n != 0 {
+	if err := s.db.Raw(`SELECT count(*) FROM tokens WHERE session_id = ?`, unused.ID).Row().Scan(&n); err != nil || n != 0 {
 		t.Errorf("tokens left after DeleteSession: %d, %v", n, err)
 	}
 }
@@ -134,28 +134,28 @@ func TestStoreTouchThrottles(t *testing.T) {
 	ctx := context.Background()
 	s, c := openStore(t)
 	session := newSession(t, s, App)
-	lastUsed := func() int64 {
-		var v int64
-		if err := s.db.QueryRow(`SELECT last_used FROM sessions WHERE id = ?`, session.ID).Scan(&v); err != nil {
+	lastUsed := func() time.Time {
+		var got Session
+		if err := s.db.Take(&got, "id = ?", session.ID).Error; err != nil {
 			t.Fatal(err)
 		}
-		return v
+		return got.LastUsed
 	}
 
 	c.t = c.t.Add(time.Hour)
 	s.Touch(ctx, session.ID)
 	first := lastUsed()
-	if first != c.t.Unix() {
-		t.Errorf("last_used %d, want %d", first, c.t.Unix())
+	if !first.Equal(c.t) {
+		t.Errorf("last_used %v, want %v", first, c.t)
 	}
 	c.t = c.t.Add(time.Minute)
 	s.Touch(ctx, session.ID)
-	if got := lastUsed(); got != first {
-		t.Errorf("Touch a minute later wrote last_used %d", got)
+	if got := lastUsed(); !got.Equal(first) {
+		t.Errorf("Touch a minute later wrote last_used %v", got)
 	}
 	c.t = c.t.Add(touchEvery)
 	s.Touch(ctx, session.ID)
-	if got := lastUsed(); got != c.t.Unix() {
-		t.Errorf("Touch after touchEvery: last_used %d, want %d", got, c.t.Unix())
+	if got := lastUsed(); !got.Equal(c.t) {
+		t.Errorf("Touch after touchEvery: last_used %v, want %v", got, c.t)
 	}
 }

@@ -70,7 +70,7 @@ func TestSweep(t *testing.T) {
 		t.Errorf("the idle session after the sweep: %v", err)
 	}
 	var tokens int
-	s.db.QueryRow(`SELECT count(*) FROM tokens WHERE hash = ?`, hashToken(short)).Scan(&tokens)
+	s.db.Raw(`SELECT count(*) FROM tokens WHERE hash = ?`, hashToken(short)).Row().Scan(&tokens)
 	if tokens != 0 {
 		t.Error("the expired token outlived the sweep")
 	}

@@ -18,6 +18,8 @@ require (
 	go.mau.fi/util v0.11.1
 	golang.org/x/oauth2 v0.38.0
 	google.golang.org/grpc v1.85.0
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.31.2
 	maunium.net/go/mautrix v0.33.0
 	modernc.org/sqlite v1.62.0
 )
@@ -47,6 +49,8 @@ require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/emersion/go-sasl v0.0.0-20241020182733-b788ff22d5a6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
