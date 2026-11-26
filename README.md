@@ -7,6 +7,7 @@ to `ghcr.io/pdeslaur/<service>`.
 |---|---|
 | [cloudflared-svid](cmd/cloudflared-svid) | Runs a Cloudflare tunnel with credentials cloudflare-sts hands its SPIFFE identity. |
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
+| [jellyfin-bridge](cmd/jellyfin-bridge) | Puts Jellyfin behind single sign-on, apps included, with tokens of its own. |
 | [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
 | [oidc-relay](cmd/oidc-relay) | Authenticates an app's OIDC client with its SPIFFE identity instead of a secret. |
 | [smtp-relay](cmd/smtp-relay) | Sends an app's SMTP email through cloudflare-sts, with its SPIFFE identity. |
@@ -46,6 +47,13 @@ tls {
 
 ## Testing
 
+jellyfin-bridge embeds its pages, built with Node, so build them first (see
+[Pages](cmd/jellyfin-bridge/README.md#pages)):
+
+```sh
+go generate ./internal/jellybridge/web
+```
+
 mautrix needs the `goolm` build tag for its olm in Go, so set it for the whole
 module:
 
@@ -54,16 +62,21 @@ GOFLAGS=-tags=goolm go test ./...
 ```
 
 Tests that need a real [tuwunel](https://github.com/matrix-construct/tuwunel)
-run with docker when `TUWUNEL_IMAGE` names an image:
+or [Jellyfin](https://jellyfin.org) run with docker when `TUWUNEL_IMAGE` or
+`JELLYFIN_IMAGE`, a linuxserver.io Jellyfin image, names one:
 
 ```sh
-GOFLAGS=-tags=goolm TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest go test ./...
+GOFLAGS=-tags=goolm \
+    TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest \
+    JELLYFIN_IMAGE=lscr.io/linuxserver/jellyfin:latest \
+    go test ./...
 ```
 
-CI runs the tests with the race detector and against tuwunel, and checks
-that the code is formatted with `gofmt`, that `go.mod` is tidy, and that
-`go vet`, [staticcheck](https://staticcheck.dev) and
-[govulncheck](https://go.dev/doc/security/vuln/) find nothing.
+CI runs the tests with the race detector and against tuwunel and Jellyfin,
+and checks that the code is formatted with `gofmt`, that `go.mod` is tidy,
+and that `go vet`, [staticcheck](https://staticcheck.dev) and
+[govulncheck](https://go.dev/doc/security/vuln/) find nothing. It builds
+jellyfin-bridge's pages first, for the jobs compiling Go.
 
 ## Images
 
@@ -84,6 +97,7 @@ cosign verify ghcr.io/pdeslaur/<command>:latest \
     --certificate-identity https://github.com/pdeslaur/hangar/.github/workflows/build.yaml@refs/heads/main
 ```
 
-[Renovate](https://github.com/pdeslaur/renovate) checks for Go module and
+[Renovate](https://github.com/pdeslaur/renovate) checks for Go module, npm and
 GitHub Actions updates daily, and its pull requests merge themselves once the
-required checks pass.
+required checks pass. [`renovate.json`](renovate.json) groups the npm updates
+into one pull request, as its shared configuration does the others.
