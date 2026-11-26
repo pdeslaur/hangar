@@ -46,7 +46,7 @@ type File struct {
 type Files []File
 
 // EnvDecode implements envconfig.Decoder.
-func (f *Files) EnvDecode(val string) error {
+func (f *Files) EnvDecode(ctx context.Context, val string) error {
 	return json.Unmarshal([]byte(val), f)
 }
 
