@@ -53,12 +53,26 @@
 		return;
 	}
 
+	let leaving = false;
 	function onRoute() {
-		if (/^#\/(login|selectserver)\b/.test(location.hash)) {
+		if (!leaving && /^#\/(login|selectserver)\b/.test(location.hash)) {
+			leaving = true;
 			location.replace(loginPage);
 		}
 	}
+	// jellyfin-web's router moves with the History API, which fires no
+	// event of its own: watch its calls, and poll in case one is missed.
+	for (const method of ["pushState", "replaceState"]) {
+		const original = history[method];
+		history[method] = function (...args) {
+			const result = original.apply(this, args);
+			onRoute();
+			return result;
+		};
+	}
 	window.addEventListener("hashchange", onRoute);
+	window.addEventListener("popstate", onRoute);
+	setInterval(onRoute, 1000);
 	onRoute();
 
 	let refreshing = false;
