@@ -24,6 +24,9 @@ const (
 	// maxCodeFailures is how many wrong codes a username may send before
 	// its code is voided.
 	maxCodeFailures = 5
+	// usedCodeMemory is how long a used code is remembered: an app keeps
+	// sending the code it signed in with when its token stops working.
+	usedCodeMemory = 90 * 24 * time.Hour
 	// maxLoginRequest bounds the body of a password login.
 	maxLoginRequest = 4 << 10
 )
@@ -48,6 +51,14 @@ type Apps struct {
 	// failures counts the wrong codes sent for each username, lowercase,
 	// that has a code.
 	failures map[string]int
+	// used are the codes used, by usedKey, and when: an app sending one
+	// again isn't guessing.
+	used map[string]time.Time
+}
+
+// usedKey is the key of a code username used.
+func usedKey(username, code string) string {
+	return strings.ToLower(username) + "\x00" + code
 }
 
 // appCode is a one-time code's user.
@@ -65,6 +76,7 @@ func NewApps(sessions *Store, client *jellyfin.Client) *Apps {
 		now:      time.Now,
 		codes:    map[string]appCode{},
 		failures: map[string]int{},
+		used:     map[string]time.Time{},
 	}
 }
 
@@ -77,6 +89,11 @@ func (a *Apps) IssueCode(userID, username string) (string, time.Time) {
 	for code, c := range a.codes {
 		if c.userID == userID || !now.Before(c.expires) {
 			delete(a.codes, code)
+		}
+	}
+	for k, when := range a.used {
+		if now.Sub(when) > usedCodeMemory {
+			delete(a.used, k)
 		}
 	}
 	delete(a.failures, strings.ToLower(username))
@@ -97,7 +114,9 @@ func (a *Apps) IssueCode(userID, username string) (string, time.Time) {
 }
 
 // redeem uses up code if it is username's, and returns its user. After
-// maxCodeFailures wrong codes, username's code is voided.
+// maxCodeFailures wrong codes, username's code is voided. A code username
+// used before isn't a wrong one: Infuse sends the one it signed in with
+// again whenever its token stops working.
 func (a *Apps) redeem(username, code string) (appCode, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -107,7 +126,11 @@ func (a *Apps) redeem(username, code string) (appCode, bool) {
 	if ok && now.Before(c.expires) && strings.EqualFold(c.username, username) && a.failures[key] < maxCodeFailures {
 		delete(a.codes, code)
 		delete(a.failures, key)
+		a.used[usedKey(username, code)] = now
 		return c, true
+	}
+	if _, ok := a.used[usedKey(username, code)]; ok {
+		return appCode{}, false
 	}
 	// Count the failure if username has a code to guess: IssueCode keeps
 	// one per user.

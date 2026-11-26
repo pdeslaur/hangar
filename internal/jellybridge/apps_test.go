@@ -64,6 +64,16 @@ func TestAppCodes(t *testing.T) {
 	if _, ok := a.redeem("alice", code); !ok {
 		t.Error("a new code after too many wrong ones failed")
 	}
+
+	// An app sending its used code again, as Infuse does, isn't guessing.
+	used := code
+	code, _ = a.IssueCode("u1", "Alice")
+	for range 2 * maxCodeFailures {
+		a.redeem("alice", used)
+	}
+	if _, ok := a.redeem("alice", code); !ok {
+		t.Error("a code voided by an app sending its used code")
+	}
 }
 
 func TestProxyRefuses(t *testing.T) {
