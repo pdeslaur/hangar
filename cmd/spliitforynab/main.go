@@ -12,7 +12,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/hangar/internal/spliit"
 	"github.com/pdeslaur/hangar/internal/ynab"
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 )
 
 type config struct {

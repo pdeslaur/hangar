@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sethvargo/go-envconfig"
+	"github.com/sethvargo/go-envconfig/v2"
 	"maunium.net/go/mautrix/id"
 )
 
