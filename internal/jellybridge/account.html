@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Jellyfin: apps and sessions</title>
+<style>
+:root { --fg: #e6e6e6; --muted: #9a9a9a; --bg: #101010; --card: #1c1c1c; --line: #333; --accent: #00a4dc; }
+@media (prefers-color-scheme: light) {
+	:root { --fg: #1a1a1a; --muted: #666; --bg: #f6f6f6; --card: #fff; --line: #ddd; }
+}
+body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--fg); }
+main { max-width: 44rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+h1 { font-size: 1.4rem; margin: 0 0 1.5rem; }
+h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: .5rem; padding: 1rem; margin-bottom: 1rem; }
+p { margin: .25rem 0 .75rem; color: var(--muted); }
+form { display: flex; gap: .5rem; flex-wrap: wrap; }
+input { font: inherit; padding: .45rem .6rem; border: 1px solid var(--line); border-radius: .35rem; background: var(--bg); color: var(--fg); width: 9rem; letter-spacing: .1em; }
+button { font: inherit; padding: .45rem .9rem; border: 0; border-radius: .35rem; background: var(--accent); color: #fff; cursor: pointer; }
+button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--line); padding: .25rem .6rem; }
+.result { margin-top: .75rem; min-height: 1.2em; }
+.code { font-size: 1.8rem; font-family: ui-monospace, monospace; letter-spacing: .15em; color: var(--fg); }
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th, td { text-align: left; padding: .45rem .3rem; border-top: 1px solid var(--line); vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; border-top: 0; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+<h1>Jellyfin apps and sessions</h1>
+
+<section>
+	<h2>Sign in an app with Quick Connect</h2>
+	<p>Choose Quick Connect in the app, then enter the code it shows.</p>
+	<form id="quickconnect">
+		<input name="code" inputmode="numeric" autocomplete="off" placeholder="Code" required>
+		<button>Sign in</button>
+	</form>
+	<div class="result" id="quickconnect-result"></div>
+</section>
+
+<section>
+	<h2>Sign in an app without Quick Connect</h2>
+	<p>For Infuse and other apps asking for a password: get a code, then sign in with this username and the code as the password. It works once, within 10 minutes.</p>
+	<form id="code">
+		<button>Get a code</button>
+	</form>
+	<div class="result" id="code-result"></div>
+</section>
+
+<section>
+	<h2>Sessions</h2>
+	<p>Browsers and apps signed in as you. A session unused for a long while ends by itself.</p>
+	<table>
+		<thead><tr><th>Device</th><th>App</th><th>Last used</th><th></th></tr></thead>
+		<tbody id="sessions"></tbody>
+	</table>
+</section>
+
+<p><a href="/web/">Back to Jellyfin</a></p>
+</main>
+<script>
+async function post(path, body) {
+	const resp = await fetch(path, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(body || {}),
+	});
+	if (!resp.ok) {
+		throw new Error((await resp.text()).trim() || resp.statusText);
+	}
+	return resp.status === 204 ? null : resp.json();
+}
+
+document.getElementById("quickconnect").addEventListener("submit", async (e) => {
+	e.preventDefault();
+	const out = document.getElementById("quickconnect-result");
+	const code = e.target.code.value.trim();
+	try {
+		await post("quickconnect", { Code: code });
+		out.textContent = "Signed in. The app continues on its own.";
+		e.target.reset();
+		setTimeout(loadSessions, 3000);
+	} catch (err) {
+		out.textContent = "Not signed in: " + err.message;
+	}
+});
+
+document.getElementById("code").addEventListener("submit", async (e) => {
+	e.preventDefault();
+	const out = document.getElementById("code-result");
+	try {
+		const c = await post("code");
+		out.replaceChildren();
+		const user = document.createElement("div");
+		user.textContent = "Username: " + c.Username;
+		const code = document.createElement("div");
+		code.className = "code";
+		code.textContent = c.Code;
+		out.append(user, code);
+	} catch (err) {
+		out.textContent = "No code: " + err.message;
+	}
+});
+
+function ago(when) {
+	const minutes = Math.round((Date.now() - new Date(when)) / 60000);
+	if (minutes < 2) return "just now";
+	if (minutes < 120) return minutes + " minutes ago";
+	const hours = Math.round(minutes / 60);
+	if (hours < 48) return hours + " hours ago";
+	return Math.round(hours / 24) + " days ago";
+}
+
+async function loadSessions() {
+	const body = document.getElementById("sessions");
+	const resp = await fetch("sessions");
+	if (!resp.ok) {
+		body.innerHTML = "<tr><td colspan=4></td></tr>";
+		body.querySelector("td").textContent = "Couldn't list sessions: " + (await resp.text());
+		return;
+	}
+	const sessions = await resp.json();
+	body.replaceChildren();
+	for (const s of sessions) {
+		const row = document.createElement("tr");
+		for (const text of [s.Device || "Unknown device", s.Client + (s.Kind === "browser" ? " (browser)" : ""), ago(s.LastUsed)]) {
+			const cell = document.createElement("td");
+			cell.textContent = text;
+			row.append(cell);
+		}
+		const cell = document.createElement("td");
+		const button = document.createElement("button");
+		button.className = "quiet";
+		button.textContent = "Sign out";
+		button.addEventListener("click", async () => {
+			button.disabled = true;
+			try {
+				await post("revoke", { ID: s.ID });
+				row.remove();
+			} catch (err) {
+				button.disabled = false;
+				alert("Couldn't sign it out: " + err.message);
+			}
+		});
+		cell.append(button);
+		row.append(cell);
+		body.append(row);
+	}
+	if (!sessions.length) {
+		body.innerHTML = "<tr><td colspan=4>None.</td></tr>";
+	}
+}
+loadSessions();
+</script>
+</body>
+</html>

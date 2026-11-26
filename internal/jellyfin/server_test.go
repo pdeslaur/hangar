@@ -25,19 +25,26 @@ func TestJellyfin(t *testing.T) {
 	}
 
 	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "bridge-test-1", Version: "10.11.0"}
-	first, err := c.Login(ctx, alice, device)
-	if err != nil {
-		t.Fatalf("Login: %v", err)
+	// login logs device in as userID, called name, returning its token.
+	login := func(userID, name string) string {
+		t.Helper()
+		result, err := c.Login(ctx, userID, device)
+		if err != nil {
+			t.Fatalf("Login %s: %v", name, err)
+		}
+		if result.UserID != userID || result.Username != name || result.Device != device {
+			t.Errorf("Login %s: user %s %q on %+v", name, result.UserID, result.Username, result.Device)
+		}
+		return result.AccessToken
 	}
+
+	first := login(alice, "alice")
 	if status, name := jellyfintest.Me(t, s.URL, first); status != http.StatusOK || name != "alice" {
 		t.Fatalf("/Users/Me with alice's token: %d %q", status, name)
 	}
 
 	// Logging the same device in again ends its first token.
-	second, err := c.Login(ctx, alice, device)
-	if err != nil {
-		t.Fatalf("Login again: %v", err)
-	}
+	second := login(alice, "alice")
 	if status, _ := jellyfintest.Me(t, s.URL, first); status != http.StatusUnauthorized {
 		t.Errorf("/Users/Me with the first token after the second login: %d", status)
 	}
@@ -46,10 +53,7 @@ func TestJellyfin(t *testing.T) {
 	}
 
 	// bob on the same browser: his own token, which alice's logout keeps.
-	bobs, err := c.Login(ctx, s.Users["bob"], device)
-	if err != nil {
-		t.Fatalf("Login bob: %v", err)
-	}
+	bobs := login(s.Users["bob"], "bob")
 	if status, name := jellyfintest.Me(t, s.URL, second); status != http.StatusOK || name != "alice" {
 		t.Errorf("/Users/Me with alice's token after bob's login: %d %q", status, name)
 	}

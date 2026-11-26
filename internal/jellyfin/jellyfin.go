@@ -127,35 +127,82 @@ func (c *Client) ServerID(ctx context.Context) (string, error) {
 	return info.ID, nil
 }
 
+// AuthenticationResult is a login's result: the user, the device's session
+// and its access token.
+type AuthenticationResult struct {
+	AccessToken string
+	UserID      string
+	Username    string
+	Device      Device
+	// Raw is the result as Jellyfin answered it, which apps read.
+	Raw json.RawMessage
+}
+
+// ParseAuthenticationResult parses an AuthenticationResult as Jellyfin
+// answers a login.
+func ParseAuthenticationResult(raw []byte) (*AuthenticationResult, error) {
+	var result struct {
+		AccessToken string
+		User        struct {
+			ID   string `json:"Id"`
+			Name string
+		}
+		SessionInfo struct {
+			Client             string
+			DeviceName         string
+			DeviceID           string `json:"DeviceId"`
+			ApplicationVersion string
+		}
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("jellyfin: decoding an authentication result: %w", err)
+	}
+	if result.AccessToken == "" || result.User.ID == "" {
+		return nil, errors.New("jellyfin: an authentication result without its token or user")
+	}
+	return &AuthenticationResult{
+		AccessToken: result.AccessToken,
+		UserID:      result.User.ID,
+		Username:    result.User.Name,
+		Device: Device{
+			Client:  result.SessionInfo.Client,
+			Name:    result.SessionInfo.DeviceName,
+			ID:      result.SessionInfo.DeviceID,
+			Version: result.SessionInfo.ApplicationVersion,
+		},
+		Raw: raw,
+	}, nil
+}
+
 // Login logs device in as the user userID with Quick Connect, which has to be
-// enabled, and returns its access token. It ends the tokens the same user
-// had on the same device ID.
-func (c *Client) Login(ctx context.Context, userID string, device Device) (string, error) {
+// enabled. It ends the tokens the same user had on the same device ID.
+func (c *Client) Login(ctx context.Context, userID string, device Device) (*AuthenticationResult, error) {
 	if err := device.validate(); err != nil {
-		return "", err
+		return nil, err
 	}
 	var request struct {
 		Secret string
 		Code   string
 	}
 	if err := c.do(ctx, http.MethodPost, "/QuickConnect/Initiate", device.Header(""), nil, &request); err != nil {
-		return "", err
+		return nil, err
 	}
-	authorize := "/QuickConnect/Authorize?" + url.Values{"code": {request.Code}, "userId": {userID}}.Encode()
-	if err := c.do(ctx, http.MethodPost, authorize, c.keyHeader(), nil, nil); err != nil {
-		return "", err
+	if err := c.AuthorizeQuickConnect(ctx, request.Code, userID); err != nil {
+		return nil, err
 	}
-	var result struct {
-		AccessToken string
-	}
+	var raw json.RawMessage
 	body := map[string]string{"Secret": request.Secret}
-	if err := c.do(ctx, http.MethodPost, "/Users/AuthenticateWithQuickConnect", device.Header(""), body, &result); err != nil {
-		return "", err
+	if err := c.do(ctx, http.MethodPost, "/Users/AuthenticateWithQuickConnect", device.Header(""), body, &raw); err != nil {
+		return nil, err
 	}
-	if result.AccessToken == "" {
-		return "", errors.New("jellyfin: Quick Connect gave no access token")
-	}
-	return result.AccessToken, nil
+	return ParseAuthenticationResult(raw)
+}
+
+// AuthorizeQuickConnect logs the device showing the Quick Connect code in as
+// the user userID.
+func (c *Client) AuthorizeQuickConnect(ctx context.Context, code, userID string) error {
+	path := "/QuickConnect/Authorize?" + url.Values{"code": {code}, "userId": {userID}}.Encode()
+	return c.do(ctx, http.MethodPost, path, c.keyHeader(), nil, nil)
 }
 
 // Logout ends token, logging out with it. A token already ended is no error.

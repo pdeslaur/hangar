@@ -44,6 +44,9 @@ type config struct {
 	Users map[string]string `env:"USERS,required"`
 	// BrowserTTL is how long a browser's token lasts.
 	BrowserTTL time.Duration `env:"BROWSER_TTL,default=8h"`
+	// RefreshBefore is how long before its token expires a browser
+	// refreshes it, at most half of BrowserTTL.
+	RefreshBefore time.Duration `env:"REFRESH_BEFORE,default=1h"`
 	// Idle is how long a session lasts without use.
 	Idle time.Duration `env:"IDLE,default=1080h"`
 	// SweepEvery is how often it ends idle sessions.
@@ -123,15 +126,18 @@ func run(ctx context.Context, cfg *config) error {
 	}()
 
 	mux := http.NewServeMux()
-	mux.Handle("/sso/", &jellybridge.Login{
-		Sessions:   sessions,
-		Jellyfin:   client,
-		ServerID:   serverID,
-		UserHeader: cfg.UserHeader,
-		Users:      cfg.Users,
-		BrowserTTL: cfg.BrowserTTL,
+	apps := jellybridge.NewApps(sessions, client)
+	mux.Handle("/sso/", &jellybridge.SSO{
+		Sessions:      sessions,
+		Jellyfin:      client,
+		Apps:          apps,
+		ServerID:      serverID,
+		UserHeader:    cfg.UserHeader,
+		Users:         cfg.Users,
+		BrowserTTL:    cfg.BrowserTTL,
+		RefreshBefore: cfg.RefreshBefore,
 	})
-	mux.Handle("/", jellybridge.NewProxy(target, sessions, nil))
+	mux.Handle("/", jellybridge.NewProxy(target, sessions, apps, nil))
 
 	lis, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {

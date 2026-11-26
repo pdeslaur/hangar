@@ -40,10 +40,11 @@ func TestProxyJellyfin(t *testing.T) {
 	store.now = time.Now
 
 	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "bridge-test-1", Version: "10.11.0"}
-	jellyfinToken, err := c.Login(ctx, s.Users["alice"], device)
+	login, err := c.Login(ctx, s.Users["alice"], device)
 	if err != nil {
 		t.Fatal(err)
 	}
+	jellyfinToken := login.AccessToken
 	session, err := store.CreateSession(ctx, Session{
 		Kind: Browser, UserID: s.Users["alice"], Username: "alice", Device: device, JellyfinToken: jellyfinToken,
 	})
@@ -55,7 +56,7 @@ func TestProxyJellyfin(t *testing.T) {
 		t.Fatal(err)
 	}
 	target, _ := url.Parse(s.URL)
-	proxy := httptest.NewServer(NewProxy(target, store, nil))
+	proxy := httptest.NewServer(NewProxy(target, store, NewApps(store, nil), nil))
 	defer proxy.Close()
 
 	if status, name := jellyfintest.Me(t, proxy.URL, token); status != http.StatusOK || name != "alice" {

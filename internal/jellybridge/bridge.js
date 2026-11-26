@@ -1,12 +1,12 @@
 // Signs jellyfin-web in through jellyfin-bridge, and keeps it signed in.
 //
 // The bridge's login page calls jellyfinBridge.signIn(). In jellyfin-web,
-// where the bridge adds this script, it refreshes the token once half its
-// life has passed, and sends jellyfin-web's own login and server pages to
-// the bridge's: signing in is the bridge's.
+// where the bridge adds this script, it refreshes the token when the
+// bridge's RefreshBefore is all it has left, and sends jellyfin-web's own
+// login and server pages to the bridge's: signing in is the bridge's.
 (() => {
 	const expiresKey = "jellyfin-bridge-expires";
-	const lifetimeKey = "jellyfin-bridge-lifetime";
+	const refreshBeforeKey = "jellyfin-bridge-refresh-before";
 	const loginPage = "/sso/login";
 
 	// signIn asks the bridge for a token for this browser, by jellyfin-web's
@@ -40,7 +40,7 @@
 		credentials.Servers = servers;
 		localStorage.setItem("jellyfin_credentials", JSON.stringify(credentials));
 		localStorage.setItem(expiresKey, String(Date.now() + session.ExpiresIn * 1000));
-		localStorage.setItem(lifetimeKey, String(session.ExpiresIn * 1000));
+		localStorage.setItem(refreshBeforeKey, String(session.RefreshBefore * 1000));
 		// The running jellyfin-web, if any, sends the new token from now on.
 		if (window.ApiClient && typeof window.ApiClient.serverId === "function" && window.ApiClient.serverId() === session.ServerId) {
 			window.ApiClient.setAuthenticationInfo(session.AccessToken, session.UserId);
@@ -78,12 +78,12 @@
 	let refreshing = false;
 	async function check() {
 		const expires = Number(localStorage.getItem(expiresKey));
-		const lifetime = Number(localStorage.getItem(lifetimeKey));
-		if (!expires || !lifetime || refreshing) {
+		const refreshBefore = Number(localStorage.getItem(refreshBeforeKey));
+		if (!expires || !refreshBefore || refreshing) {
 			return;
 		}
 		const left = expires - Date.now();
-		if (left > lifetime / 2) {
+		if (left > refreshBefore) {
 			return;
 		}
 		refreshing = true;

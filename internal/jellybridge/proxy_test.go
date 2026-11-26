@@ -55,7 +55,7 @@ func TestProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.t = c.t.Add(time.Hour)
-	p := NewProxy(echo(t), s, nil)
+	p := NewProxy(echo(t), s, NewApps(s, nil), nil)
 
 	web := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox Nightly", ID: "browser-says", Version: "10.11.1"}
 	for _, tc := range []struct {
@@ -149,7 +149,7 @@ func TestProxyAddsScript(t *testing.T) {
 	defer srv.Close()
 	target, _ := url.Parse(srv.URL)
 	s, _ := openStore(t)
-	p := NewProxy(target, s, nil)
+	p := NewProxy(target, s, NewApps(s, nil), nil)
 
 	withScript := `<!DOCTYPE html><html><head><title>Jellyfin</title>` + scriptTag + `</head><body></body></html>`
 	for _, tc := range []struct {

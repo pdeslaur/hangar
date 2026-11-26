@@ -3,6 +3,7 @@ package jellybridge
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,11 +36,25 @@ func postSession(t *testing.T, h http.Handler, user, deviceID string, headers ma
 	return w
 }
 
+// fakeUsers is a Jellyfin knowing the user alice alone, and nothing else.
+func fakeUsers(t *testing.T) *jellyfin.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Users" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `[{"Name": "alice", "Id": "u1"}]`)
+	}))
+	t.Cleanup(srv.Close)
+	return &jellyfin.Client{URL: srv.URL, HTTP: srv.Client()}
+}
+
 func TestLoginRefuses(t *testing.T) {
 	store, _ := openStore(t)
-	l := &Login{
+	l := &SSO{
 		Sessions:   store,
-		Jellyfin:   &jellyfin.Client{URL: "http://127.0.0.1:1", HTTP: http.DefaultClient},
+		Jellyfin:   fakeUsers(t),
 		UserHeader: userHeader,
 		Users:      map[string]string{"phil": "alice"},
 		BrowserTTL: 8 * time.Hour,
@@ -86,16 +101,20 @@ func TestLoginJellyfin(t *testing.T) {
 	ctx := context.Background()
 	store, _ := openStore(t)
 	store.now = time.Now
-	l := &Login{
-		Sessions:   store,
-		Jellyfin:   &jellyfin.Client{URL: s.URL, Key: jellyfintest.Key, HTTP: http.DefaultClient},
-		ServerID:   "server1",
-		UserHeader: userHeader,
-		Users:      map[string]string{"phil": "Alice"},
-		BrowserTTL: 8 * time.Hour,
+	client := &jellyfin.Client{URL: s.URL, Key: jellyfintest.Key, HTTP: http.DefaultClient}
+	apps := NewApps(store, client)
+	l := &SSO{
+		Sessions:      store,
+		Jellyfin:      client,
+		Apps:          apps,
+		ServerID:      "server1",
+		UserHeader:    userHeader,
+		Users:         map[string]string{"phil": "Alice"},
+		BrowserTTL:    8 * time.Hour,
+		RefreshBefore: time.Hour,
 	}
 	target, _ := url.Parse(s.URL)
-	proxy := httptest.NewServer(NewProxy(target, store, nil))
+	proxy := httptest.NewServer(NewProxy(target, store, apps, nil))
 	defer proxy.Close()
 
 	signIn := func(deviceID string) sessionResponse {
@@ -108,8 +127,8 @@ func TestLoginJellyfin(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.UserID != s.Users["alice"] || resp.ServerID != "server1" {
-			t.Errorf("session %+v, want alice's on server1", resp)
+		if resp.UserID != s.Users["alice"] || resp.ServerID != "server1" || resp.ExpiresIn != 8*3600 || resp.RefreshBefore != 3600 {
+			t.Errorf("session %+v, want alice's on server1, for 8 hours, refreshed an hour before", resp)
 		}
 		return resp
 	}

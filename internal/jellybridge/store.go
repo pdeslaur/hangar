@@ -192,6 +192,53 @@ func (s *Store) FindSession(ctx context.Context, kind Kind, userID, deviceID str
 	return session, err
 }
 
+// UserSessions returns the Jellyfin user userID's live sessions, the most
+// recently used first.
+func (s *Store) UserSessions(ctx context.Context, userID string) ([]Session, error) {
+	return s.query(ctx, `
+		SELECT `+sessionColumns+`
+		FROM sessions s WHERE s.user_id = ? AND s.last_used > ?
+		ORDER BY s.last_used DESC`,
+		userID, s.now().Add(-s.Idle).Unix())
+}
+
+// DeleteDeviceSessions deletes the user userID's sessions of kind on the
+// device deviceID, returning them: Jellyfin has ended their tokens when it
+// logged the device in again.
+func (s *Store) DeleteDeviceSessions(ctx context.Context, kind Kind, userID, deviceID string) ([]Session, error) {
+	sessions, err := s.query(ctx, `
+		SELECT `+sessionColumns+`
+		FROM sessions s WHERE s.kind = ? AND s.user_id = ? AND s.device_id = ?`,
+		kind, userID, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, session := range sessions {
+		if err := s.DeleteSession(ctx, session.ID); err != nil {
+			return nil, err
+		}
+	}
+	return sessions, nil
+}
+
+// query returns the sessions a query of sessionColumns selects.
+func (s *Store) query(ctx context.Context, query string, args ...any) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var sessions []Session
+	for rows.Next() {
+		session, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions, rows.Err()
+}
+
 // Touch records that the session id is in use, writing it at most every
 // touchEvery.
 func (s *Store) Touch(ctx context.Context, id string) error {
@@ -210,22 +257,9 @@ func (s *Store) Touch(ctx context.Context, id string) error {
 // IdleSessions returns the sessions idle past Idle, which the caller logs
 // out of Jellyfin and deletes.
 func (s *Store) IdleSessions(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return s.query(ctx, `
 		SELECT `+sessionColumns+`
 		FROM sessions s WHERE s.last_used <= ?`, s.now().Add(-s.Idle).Unix())
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var sessions []Session
-	for rows.Next() {
-		session, err := scanSession(rows)
-		if err != nil {
-			return nil, err
-		}
-		sessions = append(sessions, session)
-	}
-	return sessions, rows.Err()
 }
 
 // sessionColumns are a session's columns, of the table aliased s, in the
