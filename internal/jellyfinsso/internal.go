@@ -1,6 +1,7 @@
 package jellyfinsso
 
 import (
+	"mime"
 	"net/http"
 	"strings"
 
@@ -16,7 +17,10 @@ import (
 // it, through the Proxy, which hands it a jellyfin-sso token.
 //
 // A service reaching it signs in as any user Users allows, so it trusts
-// the service as much as the reverse proxy setting UserHeader.
+// the service as much as the reverse proxy setting UserHeader. It takes
+// only a JSON request, which a browser sends another site only after a
+// CORS preflight it never answers: no page can have a browser that
+// reaches it post a form there.
 func (s *SSO) Internal() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/quickconnect", s.serveInternalQuickConnect)
@@ -31,6 +35,10 @@ type quickConnectRequest struct {
 
 func (s *SSO) serveInternalQuickConnect(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	if t, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); t != "application/json" {
+		http.Error(w, "the request has to be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
 	var req quickConnectRequest
 	if !decode(w, r, &req) {
 		return
