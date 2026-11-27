@@ -1,9 +1,3 @@
 {
-  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "packageRules": [
-    {
-      "matchManagers": ["npm"],
-      "groupName": "npm packages"
-    }
-  ]
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json"
 }

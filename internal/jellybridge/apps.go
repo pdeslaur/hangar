@@ -208,3 +208,19 @@ func (a *Apps) Adopt(ctx context.Context, result *jellyfin.AuthenticationResult)
 		"device", result.Device.Name, "session", session.ID)
 	return json.Marshal(fields)
 }
+
+// decode decodes a request's JSON body into v, or answers an error.
+func decode(w http.ResponseWriter, r *http.Request, v any) bool {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequest)).Decode(v); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return false
+	}
+	return true
+}
+
+// reply answers v as JSON.
+func reply(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(v)
+}

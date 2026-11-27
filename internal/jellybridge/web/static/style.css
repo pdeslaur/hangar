@@ -115,3 +115,6 @@ th {
 a {
   color: var(--accent);
 }
+.error {
+  color: #e05555;
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <title>My devices</title>
+    <link rel="stylesheet" href="/sso-static/unpoly.min.css" />
+    <link rel="stylesheet" href="/sso-static/style.css" />
+    <script src="/sso-static/unpoly.min.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>My devices</h1>
+
+      <section id="quickconnect">
+        <h2>Sign in an app with Quick Connect</h2>
+        <p>Choose Quick Connect in the app, then enter the code it shows.</p>
+        <form method="post" action="/sso/quickconnect" up-submit up-target="#quickconnect, #sessions" up-fail-target="#quickconnect">
+          <input name="code" inputmode="numeric" autocomplete="off" placeholder="Code" required />
+          <button>Sign in</button>
+        </form>
+        <div class="result">{{.QuickConnect}}</div>
+      </section>
+
+      <section id="appcode">
+        <h2>Sign in an app without Quick Connect</h2>
+        <p>For Infuse and other apps asking for a password: get a code, then sign in with this username and the code as the password.</p>
+        <form method="post" action="/sso/code" up-submit up-target="#appcode" up-fail-target="#appcode">
+          <button>Get a code</button>
+        </form>
+        <div class="result">
+          {{- with .Code}}
+          <div>Username: {{.Username}}</div>
+          <div class="code">{{.Code}}</div>
+          <div>It works once, within {{.Minutes}} minutes.</div>
+          {{- end}}
+          {{.CodeError}}
+        </div>
+      </section>
+
+      <section id="sessions" up-poll up-interval="10000">
+        <h2>Sessions</h2>
+        <p>Browsers and apps signed in as you. A session unused for a long while ends by itself.</p>
+        {{- with .SessionsError}}
+        <p class="error">{{.}}</p>
+        {{- end}}
+        <table>
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>App</th>
+              <th>Last used</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {{- range .Sessions}}
+            <tr>
+              <td>{{or .Device "Unknown device"}}</td>
+              <td>{{.Client}}{{if eq .Kind "browser"}} (browser){{end}}</td>
+              <td>{{.Ago}}</td>
+              <td>
+                <form method="post" action="/sso/revoke" up-submit up-target="#sessions" up-fail-target="#sessions">
+                  <input type="hidden" name="id" value="{{.ID}}" />
+                  <button class="quiet">Sign out</button>
+                </form>
+              </td>
+            </tr>
+            {{- else}}
+            <tr>
+              <td colspan="4">None.</td>
+            </tr>
+            {{- end}}
+          </tbody>
+        </table>
+      </section>
+
+      <p><a href="/web/">Back to Jellyfin</a></p>
+    </main>
+  </body>
+</html>

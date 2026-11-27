@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // device's description from the client when it gives one.
 //
 // It adds the bridge's script, /sso-static/bridge.js, to jellyfin-web's
-// page.
+// page, and a link to its account page, My devices, to jellyfin-web's menu.
 //
 // Jellyfin's logins go through Apps: a password login is the bridge's, the
 // result of a Quick Connect login gets a bridge token in place of
@@ -79,6 +80,8 @@ const (
 	forward route = iota
 	// webPage is jellyfin-web's page, to add the script to.
 	webPage
+	// webConfig is jellyfin-web's config.json, to add the menu link to.
+	webConfig
 	// passwordLogin is Jellyfin's password login, which Apps answers.
 	passwordLogin
 	// quickConnectLogin is Jellyfin's Quick Connect login, whose result
@@ -100,6 +103,8 @@ func routeOf(r *http.Request) route {
 	switch {
 	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && (r.URL.Path == "/web/" || r.URL.Path == "/web/index.html"):
 		return webPage
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && r.URL.Path == "/web/config.json":
+		return webConfig
 	case path == "/users/authenticatebyname":
 		return passwordLogin
 	case path == "/users/authenticatewithquickconnect":
@@ -125,9 +130,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, routeKey{}, rt)
 	r = r.Clone(ctx)
 	switch rt {
-	case webPage:
-		// Whole and uncompressed, for addScript to change: a browser may hold
-		// a copy from before the bridge, which Jellyfin would let it keep.
+	case webPage, webConfig:
+		// Whole and uncompressed, for addScript and addMenuLink to change: a
+		// browser may hold a copy from before the bridge, which Jellyfin
+		// would let it keep.
 		for _, h := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
 			r.Header.Del(h)
 		}
@@ -224,6 +230,8 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 	switch resp.Request.Context().Value(routeKey{}) {
 	case webPage:
 		return addScript(resp)
+	case webConfig:
+		return addMenuLink(resp)
 	case quickConnectLogin:
 		return p.adoptLogin(resp)
 	}
@@ -258,18 +266,31 @@ func (p *Proxy) adoptLogin(resp *http.Response) error {
 	return nil
 }
 
+// signedOutCookie tells bridge.js that jellyfin-web signed out, rather
+// than lost its token: it then signs out of the single sign-on too, at
+// /sso/logout.
+const signedOutCookie = "jellyfin-bridge-signed-out"
+
 // serveLogout answers Jellyfin's logout, with a bridge token, by ending its
 // session: forwarded, it would end the session's Jellyfin token and leave
-// the session holding it.
+// the session holding it. A browser's gets signedOutCookie. A session
+// another request ended first, as jellyfin-web logging out twice at once
+// does, is logged out once.
 func (p *Proxy) serveLogout(w http.ResponseWriter, r *http.Request, session Session) {
 	ctx := r.Context()
-	if err := EndSession(ctx, p.apps.Sessions, p.apps.Jellyfin, session); err != nil {
+	err := EndSession(ctx, p.apps.Sessions, p.apps.Jellyfin, session)
+	if err != nil && !errors.Is(err, errNoSession) {
 		clog.ErrorContext(ctx, "ending a session", "session", session.ID, "error", err)
 		http.Error(w, "ending the session failed", http.StatusBadGateway)
 		return
 	}
-	clog.InfoContext(ctx, "logged out", "session", session.ID, "username", session.Username,
-		"client", session.Device.Client, "device", session.Device.Name)
+	if session.Kind == Browser {
+		http.SetCookie(w, &http.Cookie{Name: signedOutCookie, Value: "1", Path: "/", MaxAge: 300, Secure: true, SameSite: http.SameSiteLaxMode})
+	}
+	if err == nil {
+		clog.InfoContext(ctx, "logged out", "session", session.ID, "username", session.Username,
+			"client", session.Device.Client, "device", session.Device.Name)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -282,10 +303,65 @@ func (p *Proxy) checkSession(ctx context.Context, session Session) {
 	if err != nil || valid {
 		return
 	}
-	if err := p.apps.Sessions.DeleteSession(ctx, session.ID); err != nil {
+	err = p.apps.Sessions.DeleteSession(ctx, session.ID)
+	if errors.Is(err, errNoSession) {
+		return
+	}
+	if err != nil {
 		clog.WarnContext(ctx, "deleting a session Jellyfin no longer takes", "session", session.ID, "error", err)
 		return
 	}
 	clog.WarnContext(ctx, "deleted a session Jellyfin no longer takes", "session", session.ID,
 		"username", session.Username, "client", session.Device.Client, "device", session.Device.Name)
+}
+
+// menuLink is the link addMenuLink adds to jellyfin-web's menu, as its
+// config.json names one.
+var menuLink = map[string]string{"name": "My devices", "icon": "devices", "url": "/sso/"}
+
+// maxWebConfig bounds the size of jellyfin-web's config.json that
+// addMenuLink reads.
+const maxWebConfig = 1 << 20
+
+// addMenuLink adds menuLink to the menuLinks of jellyfin-web's config.json.
+// Like addScript, the config it changes loses its validators, and a config
+// it can't change goes on as it is.
+func addMenuLink(resp *http.Response) error {
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Encoding") != "" || resp.Request.Method != http.MethodGet {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxWebConfig+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxWebConfig {
+		clog.WarnContext(resp.Request.Context(), "can't add the bridge's link to jellyfin-web's config", "size", len(raw))
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(raw), resp.Body), resp.Body}
+		return nil
+	}
+	resp.Body.Close()
+	var config map[string]json.RawMessage
+	var links []json.RawMessage
+	err = json.Unmarshal(raw, &config)
+	if err == nil && config["menuLinks"] != nil {
+		err = json.Unmarshal(config["menuLinks"], &links)
+	}
+	if err != nil {
+		clog.WarnContext(resp.Request.Context(), "can't add the bridge's link to jellyfin-web's config", "error", err)
+		setBody(resp, raw)
+		return nil
+	}
+	link, _ := json.Marshal(menuLink)
+	config["menuLinks"], _ = json.Marshal(append(links, link))
+	out, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	setBody(resp, out)
+	resp.Header.Del("Etag")
+	resp.Header.Del("Last-Modified")
+	return nil
 }

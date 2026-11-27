@@ -225,9 +225,15 @@ func (s *Store) IdleSessions(ctx context.Context) ([]Session, error) {
 	return sessions, err
 }
 
-// DeleteSession deletes the session id and its tokens.
+// DeleteSession deletes the session id and its tokens, or returns
+// errNoSession if there's no such session: another request deleted it
+// first, say.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
-	return s.db.WithContext(ctx).Delete(&Session{ID: id}).Error
+	result := s.db.WithContext(ctx).Delete(&Session{ID: id})
+	if result.Error == nil && result.RowsAffected == 0 {
+		return errNoSession
+	}
+	return result.Error
 }
 
 // DeleteExpiredTokens deletes the tokens past their expiry.

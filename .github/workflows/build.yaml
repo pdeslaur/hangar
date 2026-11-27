@@ -26,47 +26,12 @@ permissions:
 # its newest cache and, on main, saves a new one every run, so the cache
 # follows the code rather than go.sum. Pull requests only read main's caches.
 jobs:
-    # jellyfin-bridge's pages, built with Node for go:embed. Every job
-    # compiling Go needs them, so this builds them once for the rest.
-    web:
-        runs-on: ubuntu-latest
-        defaults:
-            run:
-                working-directory: internal/jellybridge/web
-        steps:
-            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  persist-credentials: false
-
-            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-              with:
-                  node-version: 26
-                  cache: npm
-                  cache-dependency-path: internal/jellybridge/web/package-lock.json
-
-            - run: npm ci
-
-            - run: npm run build
-
-            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-              with:
-                  name: jellybridge-web
-                  path: internal/jellybridge/web/dist
-                  if-no-files-found: error
-                  retention-days: 1
-
     lint:
-        needs: web
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
-
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: jellybridge-web
-                  path: internal/jellybridge/web/dist
 
             - id: go
               uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -112,17 +77,11 @@ jobs:
 
     # Runs tuwunel:latest, so holds no permission to publish.
     test:
-        needs: web
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
-
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: jellybridge-web
-                  path: internal/jellybridge/web/dist
 
             - id: go
               uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -162,7 +121,7 @@ jobs:
                   key: ${{ steps.cache.outputs.cache-primary-key }}
 
     build:
-        needs: [web, lint, test]
+        needs: [lint, test]
         runs-on: ubuntu-latest
         permissions:
             contents: read
@@ -172,11 +131,6 @@ jobs:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   persist-credentials: false
-
-            - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-              with:
-                  name: jellybridge-web
-                  path: internal/jellybridge/web/dist
 
             - id: go
               uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0

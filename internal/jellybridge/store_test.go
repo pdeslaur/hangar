@@ -129,6 +129,9 @@ func TestStoreIdle(t *testing.T) {
 	if err := s.db.Raw(`SELECT count(*) FROM tokens WHERE session_id = ?`, unused.ID).Row().Scan(&n); err != nil || n != 0 {
 		t.Errorf("tokens left after DeleteSession: %d, %v", n, err)
 	}
+	if err := s.DeleteSession(ctx, unused.ID); !errors.Is(err, errNoSession) {
+		t.Errorf("DeleteSession of a deleted session: %v, want errNoSession", err)
+	}
 }
 
 func TestStoreTouchThrottles(t *testing.T) {

@@ -19,6 +19,9 @@ func Sweep(ctx context.Context, sessions *Store, client *jellyfin.Client) error 
 	var errs []error
 	for _, session := range idle {
 		if err := EndSession(ctx, sessions, client, session); err != nil {
+			if errors.Is(err, errNoSession) {
+				continue
+			}
 			errs = append(errs, err)
 			continue
 		}
@@ -32,7 +35,8 @@ func Sweep(ctx context.Context, sessions *Store, client *jellyfin.Client) error 
 }
 
 // EndSession logs session's Jellyfin token out and deletes the session, with
-// its bridge tokens. If Jellyfin can't log it out, the session stays.
+// its bridge tokens. If Jellyfin can't log it out, the session stays. It
+// returns errNoSession if another request ended the session first.
 func EndSession(ctx context.Context, sessions *Store, client *jellyfin.Client, session Session) error {
 	if err := client.Logout(ctx, session.JellyfinToken); err != nil {
 		return err

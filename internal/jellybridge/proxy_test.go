@@ -201,3 +201,95 @@ func TestProxyAddsScript(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyAddsMenuLink(t *testing.T) {
+	configs := map[string]string{
+		"/web/config.json":      `{"multiserver":false,"menuLinks":[{"name":"Wiki","url":"https://wiki.example"}],"plugins":["a"]}`,
+		"/web/none/config.json": `{"multiserver":false}`,
+	}
+	// Like Jellyfin, it compresses what it can, and lets a browser keep its
+	// copy.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Etag", `"abc"`)
+		if r.Header.Get("If-None-Match") == `"abc"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		config := configs[r.URL.Path]
+		w.Header().Set("Content-Type", "application/json")
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			io.WriteString(w, config)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		io.WriteString(gz, config)
+		gz.Close()
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	s, _ := openStore(t)
+	p := NewProxy(target, NewApps(s, nil))
+
+	get := func(path, cached string) (*http.Response, map[string]json.RawMessage) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		r.Header.Set("Accept-Encoding", "gzip")
+		if cached != "" {
+			r.Header.Set("If-None-Match", cached)
+		}
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, r)
+		resp := w.Result()
+		var config map[string]json.RawMessage
+		if resp.Header.Get("Content-Encoding") == "" {
+			json.Unmarshal(w.Body.Bytes(), &config)
+		}
+		return resp, config
+	}
+	link := `{"icon":"devices","name":"My devices","url":"/sso/"}`
+	for _, tc := range []struct {
+		name, path, cached, links string
+	}{
+		{"with links", "/web/config.json", "", `[{"name":"Wiki","url":"https://wiki.example"},` + link + `]`},
+		{"cached", "/web/config.json", `"abc"`, `[{"name":"Wiki","url":"https://wiki.example"},` + link + `]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, config := get(tc.path, tc.cached)
+			if resp.StatusCode != http.StatusOK || string(config["menuLinks"]) != tc.links || string(config["plugins"]) != `["a"]` {
+				t.Errorf("%d, config %s", resp.StatusCode, config)
+			}
+			if resp.Header.Get("Etag") != "" {
+				t.Errorf("Etag %q on a changed config", resp.Header.Get("Etag"))
+			}
+		})
+	}
+	if _, config := get("/web/none/config.json", ""); config != nil {
+		t.Errorf("a config.json elsewhere changed: %s", config)
+	}
+	if resp, _ := get("/web/none/config.json", ""); resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Error("a config.json elsewhere lost its encoding")
+	}
+}
+
+func TestAddMenuLink(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"multiserver":false}`, `{"menuLinks":[{"icon":"devices","name":"My devices","url":"/sso/"}],"multiserver":false}`},
+		{`{"menuLinks":null}`, `{"menuLinks":[{"icon":"devices","name":"My devices","url":"/sso/"}]}`},
+		{`{"menuLinks":`, `{"menuLinks":`},
+		{`[1]`, `[1]`},
+	} {
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(tc.in)),
+			Request:    httptest.NewRequest(http.MethodGet, "/web/config.json", nil),
+		}
+		if err := addMenuLink(resp); err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := io.ReadAll(resp.Body); string(b) != tc.want {
+			t.Errorf("addMenuLink(%s) = %s, want %s", tc.in, b, tc.want)
+		}
+	}
+}

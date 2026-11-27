@@ -1,32 +1,23 @@
 // Signs jellyfin-web in through jellyfin-bridge, and keeps it signed in.
 //
-// The bridge's login page calls jellyfinBridge.signIn(). In jellyfin-web,
-// where the bridge adds this script, it refreshes the token when the
-// bridge's RefreshBefore is all it has left, and sends jellyfin-web's own
-// login and server pages to the bridge's: signing in is the bridge's.
+// The bridge's login page calls jellyfinBridge.store() with the session it
+// made. In jellyfin-web, where the bridge adds this script, it refreshes
+// the token when the bridge's RefreshBefore is all it has left, and sends
+// jellyfin-web's own login and server pages to the bridge's: signing in is
+// the bridge's. Once jellyfin-web signs out, which the bridge marks with a
+// cookie, it signs out of the single sign-on too.
 (() => {
 	const expiresKey = "jellyfin-bridge-expires";
 	const refreshBeforeKey = "jellyfin-bridge-refresh-before";
+	const signedOutCookie = "jellyfin-bridge-signed-out";
 	const loginPage = "/sso/login";
+	const logoutPage = "/sso/logout";
 
-	// signIn asks the bridge for a token for this browser, by jellyfin-web's
-	// own device ID, and stores it where jellyfin-web reads its credentials.
-	async function signIn() {
-		let deviceId = localStorage.getItem("_deviceId2");
-		if (!deviceId) {
-			// Made as jellyfin-web makes it when it has none.
-			deviceId = btoa([navigator.userAgent, Date.now()].join("|")).replaceAll("=", "1");
-			localStorage.setItem("_deviceId2", deviceId);
-		}
-		const resp = await fetch("/sso/session", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ DeviceId: deviceId }),
-		});
-		if (!resp.ok) {
-			throw new Error(await resp.text());
-		}
-		const session = await resp.json();
+	// store stores a session from the bridge, {AccessToken, UserId,
+	// ServerId, DeviceId, ExpiresIn, RefreshBefore}, where jellyfin-web
+	// reads its credentials, with the browser's device ID.
+	function store(session) {
+		localStorage.setItem("_deviceId2", session.DeviceId);
 		const credentials = JSON.parse(localStorage.getItem("jellyfin_credentials") || "{}");
 		const servers = (credentials.Servers || []).filter((s) => s.Id !== session.ServerId);
 		servers.unshift({
@@ -47,10 +38,30 @@
 		}
 	}
 
-	window.jellyfinBridge = { signIn };
+	// refresh asks the bridge for a new token for this browser's session.
+	async function refresh() {
+		const resp = await fetch("/sso/session", { method: "POST" });
+		if (!resp.ok) {
+			throw new Error(await resp.text());
+		}
+		store(await resp.json());
+	}
+
+	window.jellyfinBridge = { store };
 
 	if (location.pathname === loginPage) {
 		return;
+	}
+
+	// signInPage is where jellyfin-web's login page sends the browser: the
+	// bridge's, or, once jellyfin-web signed out, the single sign-on's
+	// logout.
+	function signInPage() {
+		if (!document.cookie.split("; ").includes(signedOutCookie + "=1")) {
+			return loginPage;
+		}
+		document.cookie = signedOutCookie + "=; Path=/; Max-Age=0; Secure; SameSite=Lax";
+		return logoutPage;
 	}
 
 	// A token that expired while the page was closed, or the computer
@@ -65,7 +76,7 @@
 	function onRoute() {
 		if (!leaving && /^#\/(login|selectserver)\b/.test(location.hash)) {
 			leaving = true;
-			location.replace(loginPage);
+			location.replace(signInPage());
 		}
 	}
 	// jellyfin-web's router moves with the History API, which fires no
@@ -96,7 +107,7 @@
 		}
 		refreshing = true;
 		try {
-			await signIn();
+			await refresh();
 		} catch (e) {
 			// The sign-on's session is gone, most likely: once the token is
 			// too, sign in again through it.
