@@ -87,7 +87,9 @@ func (f *fakes) handler(t *testing.T) (*url.URL, string) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		var body struct{ Code, User string }
-		if r.Method != http.MethodPost || r.URL.Path != "/internal/quickconnect" || json.NewDecoder(r.Body).Decode(&body) != nil {
+		// jellyfin-sso takes a JSON request alone.
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/quickconnect" ||
+			r.Header.Get("Content-Type") != "application/json" || json.NewDecoder(r.Body).Decode(&body) != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
