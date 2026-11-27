@@ -195,6 +195,9 @@ func TestProxyAddsScript(t *testing.T) {
 			if got := resp.Header.Get("Content-Length"); tc.changed && got != fmt.Sprint(len(tc.want)) {
 				t.Errorf("Content-Length %s, want %d", got, len(tc.want))
 			}
+			if cc := resp.Header.Get("Cache-Control"); (cc == "no-cache") != tc.changed {
+				t.Errorf("Cache-Control %q, changed %v", cc, tc.changed)
+			}
 			if etag := resp.Header.Get("Etag"); (etag == "") != tc.changed {
 				t.Errorf("Etag %q, changed %v", etag, tc.changed)
 			}
@@ -259,8 +262,8 @@ func TestProxyAddsMenuLink(t *testing.T) {
 			if resp.StatusCode != http.StatusOK || string(config["menuLinks"]) != tc.links || string(config["plugins"]) != `["a"]` {
 				t.Errorf("%d, config %s", resp.StatusCode, config)
 			}
-			if resp.Header.Get("Etag") != "" {
-				t.Errorf("Etag %q on a changed config", resp.Header.Get("Etag"))
+			if resp.Header.Get("Etag") != "" || resp.Header.Get("Cache-Control") != "no-cache" {
+				t.Errorf("Etag %q, Cache-Control %q on a changed config", resp.Header.Get("Etag"), resp.Header.Get("Cache-Control"))
 			}
 		})
 	}

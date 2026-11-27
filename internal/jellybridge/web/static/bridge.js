@@ -72,6 +72,48 @@
 		return;
 	}
 
+	// addMenuItems adds "My devices", the bridge's account page, after the
+	// Quick Connect item of jellyfin-web's user menu, which has no setting
+	// for it: the avatar's menu in the new layout, the user's page in the
+	// classic one. The item is a copy of Quick Connect's, styled alike,
+	// which React doesn't know of: a plain link. Without a Quick Connect
+	// item, as with Quick Connect off, there's none, and the side menu's
+	// link from config.json stays.
+	// The new layout hides the classic one's, by its class, which the copy
+	// keeps.
+	const quickConnectItems = '#app-user-menu a[href$="/quickconnect"], a.lnkQuickConnectPreferences:not([data-jellyfin-bridge])';
+	function addMenuItems() {
+		for (const quickConnect of document.querySelectorAll(quickConnectItems)) {
+			if (quickConnect.nextElementSibling?.dataset.jellyfinBridge) {
+				continue;
+			}
+			const item = quickConnect.cloneNode(true);
+			item.dataset.jellyfinBridge = "devices";
+			item.setAttribute("href", "/sso/");
+			item.classList.remove("Mui-focusVisible", "Mui-selected");
+			// The label: the first text that isn't an icon's.
+			const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+			for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+				if (text.textContent.trim() && !text.parentElement.closest(".material-icons")) {
+					text.textContent = "My devices";
+					break;
+				}
+			}
+			// The icon: an SVG in the new layout, a class in the classic one.
+			const svg = item.querySelector("svg");
+			if (svg) {
+				const icon = document.createElement("span");
+				icon.className = "material-icons";
+				icon.setAttribute("aria-hidden", "true");
+				icon.textContent = "devices";
+				svg.replaceWith(icon);
+			}
+			item.querySelector(".material-icons.phonelink_lock")?.classList.replace("phonelink_lock", "devices");
+			quickConnect.after(item);
+		}
+	}
+	new MutationObserver(addMenuItems).observe(document.documentElement, { childList: true, subtree: true });
+
 	let leaving = false;
 	function onRoute() {
 		if (!leaving && /^#\/(login|selectserver)\b/.test(location.hash)) {
