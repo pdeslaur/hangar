@@ -228,24 +228,6 @@ func TestLoginJellyfin(t *testing.T) {
 		t.Errorf("the second browser's session: %+v, %v", session, err)
 	}
 
-	// A browser holding the device cookie under jellyfin-sso's former name
-	// keeps its session, its cookie moved.
-	former := &http.Cookie{Name: formerDeviceCookie, Value: first.DeviceID}
-	w = browse(t, l, http.MethodGet, "/sso/login", "phil", []*http.Cookie{former}, nil)
-	if m := storedSession.FindStringSubmatch(w.Body.String()); m == nil || !strings.Contains(m[1], `"DeviceId":"`+first.DeviceID+`"`) {
-		t.Errorf("GET /sso/login with the former device cookie: %d %s", w.Code, w.Body)
-	}
-	cleared := false
-	for _, c := range w.Result().Cookies() {
-		cleared = cleared || c.Name == formerDeviceCookie && c.MaxAge < 0
-	}
-	if !cleared {
-		t.Errorf("GET /sso/login with the former device cookie: cookies %v, want it cleared", w.Result().Cookies())
-	}
-	if err := store.db.Raw(`SELECT count(*) FROM sessions`).Row().Scan(&sessions); err != nil || sessions != 2 {
-		t.Errorf("sessions after signing in with the former cookie: %d, %v", sessions, err)
-	}
-
 	// A device cookie too long for a device ID: a device of its own.
 	long := &http.Cookie{Name: deviceCookie, Value: strings.Repeat("x", maxDeviceID+1)}
 	if session, _ := login(l, "phil", long); session.DeviceID == long.Value {

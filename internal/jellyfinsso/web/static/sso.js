@@ -17,19 +17,6 @@
 	const loginPage = "/sso/login";
 	const logoutPage = "/sso/logout";
 
-	// Under jellyfin-sso's former name, jellyfin-bridge, its keys began
-	// jellyfin-bridge-: move them, keeping the browser signed in.
-	for (const key of [sessionKey, expiresKey, refreshBeforeKey]) {
-		const former = key.replace(/^jellyfin-sso-/, "jellyfin-bridge-");
-		const value = localStorage.getItem(former);
-		if (value !== null) {
-			if (localStorage.getItem(key) === null) {
-				localStorage.setItem(key, value);
-			}
-			localStorage.removeItem(former);
-		}
-	}
-
 	// store stores a session from jellyfin-sso, {AccessToken, UserId,
 	// ServerId, DeviceId, ExpiresIn, RefreshBefore}, where jellyfin-web
 	// reads its credentials, with the browser's device ID.

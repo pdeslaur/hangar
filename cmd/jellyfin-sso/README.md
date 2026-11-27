@@ -91,10 +91,6 @@ The pages under `/sso/` are Go `html/template` templates in [`internal/jellyfins
 
 `unpoly.min.js` and `unpoly.min.css` are Unpoly's, from its npm package, with a line naming its version, the package's hash and its license added at the top. Renovate doesn't update them. To update them, download the package's tarball from the npm registry, check its `sha512` against the registry's `dist.integrity`, and copy the two files in the same way.
 
-## Formerly jellyfin-bridge
-
-jellyfin-sso was jellyfin-bridge. It carries a browser or a service over without signing anyone in again: at start, it moves its database, `jellyfin-bridge.db` beside `JELLYFIN_DB`, to `jellyfin-sso.db`, unless `STATE` is set, and deletes the API key named `jellyfin-bridge`; `/sso/login` takes a browser's device ID from the `jellyfin-bridge-device` cookie, and `sso.js` moves its `jellyfin-bridge-*` keys. The reverse proxy's header defaults to `X-SSO-User` rather than `X-Bridge-User`, and the internal listener's path is `/internal/quickconnect` rather than `/bridge/quickconnect`.
-
 ## Image
 
 `ghcr.io/pdeslaur/jellyfin-sso`, for `linux/amd64` and `linux/arm64`, tagged `latest` and with the short commit SHA. See [Images](../../README.md#images) for how it's built and how to verify its signature.
