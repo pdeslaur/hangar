@@ -2,6 +2,7 @@ package seerrsso
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,8 @@ type fakes struct {
 	seerrUsers map[string]bool
 	// cookie is whether Seerr sets its session cookie.
 	cookie bool
+	// csrf is whether Seerr's CSRF protection is on.
+	csrf bool
 	// user is who Seerr signed in.
 	user string
 	// seen are the requests Seerr received, with their headers.
@@ -35,6 +38,21 @@ func (f *fakes) handler(t *testing.T) (*url.URL, string) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.seen = append(f.seen, r)
+		if f.csrf {
+			// Like csurf: the secret in _csrf, the token, URL-encoded by
+			// Express, in XSRF-TOKEN, on every response; a POST carries
+			// both.
+			if r.Method == http.MethodPost {
+				secret, err := r.Cookie("_csrf")
+				if err != nil || secret.Value != "s%2Fcr3t" || r.Header.Get("X-XSRF-TOKEN") != "t0k/en" {
+					http.Error(w, `{"message":"invalid csrf token"}`, http.StatusForbidden)
+					return
+				}
+			} else {
+				w.Header().Add("Set-Cookie", "_csrf=s%2Fcr3t; Path=/; HttpOnly; Secure; SameSite=Strict")
+			}
+			w.Header().Add("Set-Cookie", "XSRF-TOKEN=t0k%2Fen; Path=/; Secure; SameSite=Strict")
+		}
 		switch r.URL.Path {
 		case "/api/v1/auth/jellyfin/quickconnect/initiate":
 			io.WriteString(w, `{"code":"123456","secret":"s3cret"}`)
@@ -107,23 +125,31 @@ func browse(h http.Handler, method, path, user string, cookies ...*http.Cookie) 
 }
 
 func TestLogin(t *testing.T) {
-	f := &fakes{seerrUsers: map[string]bool{"alice": true}, cookie: true}
-	h := newHandler(t, f)
-	w := browse(h, http.MethodGet, "/sso/login", "phil")
-	if w.Code != http.StatusFound || w.Header().Get("Location") != "/" {
-		t.Fatalf("GET /sso/login: %d to %q: %s", w.Code, w.Header().Get("Location"), w.Body)
-	}
-	if got := w.Header().Values("Set-Cookie"); len(got) != 1 || !strings.HasPrefix(got[0], "connect.sid=abc;") {
-		t.Errorf("cookies %q, want Seerr's", got)
-	}
-	if f.user != "alice" {
-		t.Errorf("Seerr signed in %q", f.user)
-	}
-	// Seerr trusts the proxy's headers, for its secure cookie and its logs.
-	for _, r := range f.seen {
-		if r.Header.Get("X-Forwarded-Proto") != "https" || r.Header.Get("X-Forwarded-For") != "203.0.113.7" || r.Host != "seerr.example.com" {
-			t.Errorf("%s reached Seerr with %q, %q, host %q", r.URL.Path, r.Header.Get("X-Forwarded-Proto"), r.Header.Get("X-Forwarded-For"), r.Host)
-		}
+	for _, csrf := range []bool{false, true} {
+		t.Run(fmt.Sprintf("csrf %t", csrf), func(t *testing.T) {
+			f := &fakes{seerrUsers: map[string]bool{"alice": true}, cookie: true, csrf: csrf}
+			h := newHandler(t, f)
+			w := browse(h, http.MethodGet, "/sso/login", "phil")
+			// A page sending the browser on, for Seerr's SameSite=Strict
+			// session cookie.
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `<meta http-equiv="refresh" content="0;url=/">`) {
+				t.Fatalf("GET /sso/login: %d: %s", w.Code, w.Body)
+			}
+			// Seerr's session cookie alone, not its CSRF ones.
+			if got := w.Header().Values("Set-Cookie"); len(got) != 1 || !strings.HasPrefix(got[0], "connect.sid=abc;") {
+				t.Errorf("cookies %q, want Seerr's session", got)
+			}
+			if f.user != "alice" {
+				t.Errorf("Seerr signed in %q", f.user)
+			}
+			// Seerr trusts the proxy's headers, for its secure cookie and its
+			// logs.
+			for _, r := range f.seen {
+				if r.Header.Get("X-Forwarded-Proto") != "https" || r.Header.Get("X-Forwarded-For") != "203.0.113.7" || r.Host != "seerr.example.com" {
+					t.Errorf("%s reached Seerr with %q, %q, host %q", r.URL.Path, r.Header.Get("X-Forwarded-Proto"), r.Header.Get("X-Forwarded-For"), r.Host)
+				}
+			}
+		})
 	}
 }
 
@@ -148,8 +174,13 @@ func TestLoginFails(t *testing.T) {
 			}
 		})
 	}
+	// No session cookie, among Seerr's CSRF ones.
+	h := newHandler(t, &fakes{seerrUsers: map[string]bool{"alice": true}, csrf: true})
+	if w := browse(h, http.MethodGet, "/sso/login", "phil"); w.Code != http.StatusBadGateway || w.Header().Get("Set-Cookie") != "" {
+		t.Errorf("no session cookie, CSRF on: status %d, cookies %q", w.Code, w.Header().Values("Set-Cookie"))
+	}
 	// Seerr unreachable.
-	h := &Handler{Seerr: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, Bridge: "http://127.0.0.1:1", UserHeader: userHeader, Client: http.DefaultClient}
+	h = &Handler{Seerr: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, Bridge: "http://127.0.0.1:1", UserHeader: userHeader, Client: http.DefaultClient}
 	if w := browse(h, http.MethodGet, "/sso/login", "phil"); w.Code != http.StatusBadGateway {
 		t.Errorf("Seerr down: status %d", w.Code)
 	}

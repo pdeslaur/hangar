@@ -6,7 +6,8 @@
 // /sso/* and names them in UserHeader. On GET /sso/login, the Handler
 // starts a Quick Connect sign-in in Seerr, has jellyfin-bridge approve its
 // code for the user, finishes it, and hands the browser the session cookie
-// Seerr set. Seerr's own login page sends the browser there.
+// Seerr set, its own calls carrying a CSRF token when Seerr's CSRF
+// protection is on. Seerr's own login page sends the browser there.
 package seerrsso
 
 import (
@@ -16,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -29,6 +31,16 @@ import (
 // visit to Seerr's login page signs it out of the single sign-on too, at
 // /sso/logout, rather than in again.
 const signedOutCookie = "seerr-sso-signed-out"
+
+const (
+	// sessionCookie is Seerr's session cookie.
+	sessionCookie = "connect.sid"
+	// csrfCookie holds Seerr's CSRF secret, csrfTokenCookie a token made
+	// from it, which a POST carries in csrfTokenHeader.
+	csrfCookie      = "_csrf"
+	csrfTokenCookie = "XSRF-TOKEN"
+	csrfTokenHeader = "X-XSRF-TOKEN"
+)
 
 // forwardedHeaders are the ones the reverse proxy sets, which Seerr needs
 // to set its secure cookies and log clients' addresses, and which a
@@ -122,19 +134,27 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("%s: %d %s", e.url, e.status, e.body)
 }
 
-// call sends a JSON request, with r's forwarded headers, and decodes the
-// JSON answer into out, if any, returning the response, its body closed.
-func (h *Handler) call(ctx context.Context, r *http.Request, url string, in, out any, want int) (*http.Response, error) {
-	body, err := json.Marshal(in)
-	if err != nil {
-		return nil, err
+// call sends a request, with r's forwarded headers and header, and the
+// JSON of in, if any, and decodes the JSON answer into out, if any,
+// returning the response, its body closed.
+func (h *Handler) call(ctx context.Context, r *http.Request, method, url string, header http.Header, in, out any, want int) (*http.Response, error) {
+	var body io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Host = r.Host
-	req.Header.Set("Content-Type", "application/json")
+	maps.Copy(req.Header, header)
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Accept", "application/json")
 	for _, name := range forwardedHeaders {
 		if v := r.Header.Values(name); len(v) > 0 {
@@ -164,6 +184,36 @@ func isStatus(err error, status int) bool {
 	return errors.As(err, &e) && e.status == status
 }
 
+// csrf returns the headers Seerr's POSTs need when its CSRF protection is
+// on, none otherwise. Seerr then sets a secret, in csrfCookie, and a token
+// made from it, in csrfTokenCookie, on every response, and a POST has to
+// carry both: the secret as its cookie, the token in csrfTokenHeader.
+func (h *Handler) csrf(ctx context.Context, r *http.Request) (http.Header, error) {
+	resp, err := h.call(ctx, r, http.MethodGet, h.seerrURL("/api/v1/status"), nil, nil, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	header := http.Header{}
+	for _, c := range resp.Cookies() {
+		switch c.Name {
+		case csrfCookie:
+			header.Set("Cookie", (&http.Cookie{Name: c.Name, Value: c.Value}).String())
+		case csrfTokenCookie:
+			// Express URL-encodes cookie values.
+			token, err := url.QueryUnescape(c.Value)
+			if err != nil {
+				return nil, fmt.Errorf("%s cookie: %w", csrfTokenCookie, err)
+			}
+			header.Set(csrfTokenHeader, token)
+		}
+	}
+	return header, nil
+}
+
+func (h *Handler) seerrURL(path string) string {
+	return strings.TrimSuffix(h.Seerr.String(), "/") + path
+}
+
 func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
@@ -172,20 +222,27 @@ func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not signed in", http.StatusForbidden)
 		return
 	}
-	seerr := strings.TrimSuffix(h.Seerr.String(), "/") + "/api/v1/auth/jellyfin/quickconnect/"
+	quickConnect := h.seerrURL("/api/v1/auth/jellyfin/quickconnect/")
+
+	csrf, err := h.csrf(ctx, r)
+	if err != nil {
+		clog.ErrorContext(ctx, "reaching seerr", "user", name, "error", err)
+		http.Error(w, "Seerr couldn't start signing in.", http.StatusBadGateway)
+		return
+	}
 
 	var started struct {
 		Code   string `json:"code"`
 		Secret string `json:"secret"`
 	}
-	if _, err := h.call(ctx, r, seerr+"initiate", struct{}{}, &started, http.StatusOK); err != nil {
+	if _, err := h.call(ctx, r, http.MethodPost, quickConnect+"initiate", csrf, struct{}{}, &started, http.StatusOK); err != nil {
 		clog.ErrorContext(ctx, "starting a Quick Connect sign-in in seerr", "user", name, "error", err)
 		http.Error(w, "Seerr couldn't start signing in.", http.StatusBadGateway)
 		return
 	}
 
 	approve := map[string]string{"Code": started.Code, "User": name}
-	if _, err := h.call(ctx, r, strings.TrimSuffix(h.Bridge, "/")+"/bridge/quickconnect", approve, nil, http.StatusNoContent); err != nil {
+	if _, err := h.call(ctx, r, http.MethodPost, strings.TrimSuffix(h.Bridge, "/")+"/bridge/quickconnect", nil, approve, nil, http.StatusNoContent); err != nil {
 		if isStatus(err, http.StatusForbidden) {
 			clog.WarnContext(ctx, "jellyfin-bridge knows no user", "user", name)
 			http.Error(w, "No Jellyfin user for "+name+".", http.StatusForbidden)
@@ -196,7 +253,7 @@ func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := h.call(ctx, r, seerr+"authenticate", map[string]string{"secret": started.Secret}, nil, http.StatusOK)
+	resp, err := h.call(ctx, r, http.MethodPost, quickConnect+"authenticate", csrf, map[string]string{"secret": started.Secret}, nil, http.StatusOK)
 	if isStatus(err, http.StatusForbidden) {
 		clog.WarnContext(ctx, "seerr refused a user", "user", name, "error", err)
 		http.Error(w, "Seerr has no user for "+name+": an admin imports them from Jellyfin, or enables new Jellyfin sign-ins.", http.StatusForbidden)
@@ -207,17 +264,37 @@ func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Seerr couldn't finish signing in.", http.StatusBadGateway)
 		return
 	}
-	cookies := resp.Header.Values("Set-Cookie")
-	if len(cookies) == 0 {
+	// The session cookie alone: Seerr's CSRF cookies are seerr-sso's own.
+	var session []string
+	for _, line := range resp.Header.Values("Set-Cookie") {
+		if c, err := http.ParseSetCookie(line); err == nil && c.Name == sessionCookie {
+			session = append(session, line)
+		}
+	}
+	if len(session) == 0 {
 		// Seerr's session cookie is secure: Seerr sets it only for a
 		// request it trusts the X-Forwarded-Proto of.
 		clog.ErrorContext(ctx, "seerr set no session cookie: is its proxy support on?", "user", name)
 		http.Error(w, "Seerr signed in without a session.", http.StatusBadGateway)
 		return
 	}
-	for _, c := range cookies {
+	for _, c := range session {
 		w.Header().Add("Set-Cookie", c)
 	}
 	clog.InfoContext(ctx, "signed in to seerr", "user", name)
-	http.Redirect(w, r, "/", http.StatusFound)
+	// A page sending the browser on, not a redirect: the browser came
+	// through redirects from the identity provider, another site, and
+	// would leave out a SameSite=Strict session cookie, Seerr's with its
+	// CSRF protection on, on one more. A page's own navigation is
+	// same-site.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	io.WriteString(w, signedInPage)
 }
+
+// signedInPage sends the browser to Seerr's home page.
+const signedInPage = `<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="0;url=/">
+<title>Seerr</title>
+<a href="/">Continue to Seerr</a>
+`
