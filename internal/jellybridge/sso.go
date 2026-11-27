@@ -171,8 +171,13 @@ type user struct {
 
 // user returns the signed-in user, or answers an error.
 func (s *SSO) user(w http.ResponseWriter, r *http.Request) (user, bool) {
+	return s.lookUp(w, r, r.Header.Get(s.UserHeader))
+}
+
+// lookUp returns the Jellyfin user of the single sign-on's user name, or
+// answers an error.
+func (s *SSO) lookUp(w http.ResponseWriter, r *http.Request, name string) (user, bool) {
 	ctx := r.Context()
-	name := r.Header.Get(s.UserHeader)
 	username, ok := name, true
 	if len(s.Users) > 0 {
 		username, ok = s.Users[name]
