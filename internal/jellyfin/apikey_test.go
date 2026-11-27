@@ -52,6 +52,9 @@ func apiKeys(t *testing.T, db *sql.DB) []string {
 		}
 		keys = append(keys, name+"="+token)
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	return keys
 }
 

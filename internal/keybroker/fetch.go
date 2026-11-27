@@ -156,7 +156,8 @@ func (c *Client) Render(ctx context.Context, files Files) (map[string][]byte, er
 	out := map[string][]byte{}
 	for _, file := range files {
 		var b strings.Builder
-		b.WriteString(file.Variable + "=")
+		b.WriteString(file.Variable)
+		b.WriteString("=")
 		for _, part := range file.Parts {
 			if part.Derive == nil {
 				b.WriteString(part.Text)
