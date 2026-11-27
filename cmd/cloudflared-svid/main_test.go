@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pdeslaur/hangar/internal/cloudflarests"
+	"github.com/pdeslaur/cloudflare-sts/go/cloudflarests"
 	"github.com/pdeslaur/hangar/internal/workloadtest"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 )
