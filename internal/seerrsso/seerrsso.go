@@ -7,12 +7,14 @@
 // starts a Quick Connect sign-in in Seerr, has jellyfin-bridge approve its
 // code for the user, finishes it, and hands the browser the session cookie
 // Seerr set, its own calls carrying a CSRF token when Seerr's CSRF
-// protection is on. Seerr's own login page sends the browser there.
+// protection is on. Seerr's own login page sends the browser there. With a
+// SessionDuration, the Handler ends Seerr's sessions sooner than Seerr.
 package seerrsso
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +25,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 )
@@ -59,13 +62,25 @@ type Handler struct {
 	UserHeader string
 	// Client calls Seerr and jellyfin-bridge.
 	Client *http.Client
+	// SessionDuration, if positive, limits how long a Seerr session lasts,
+	// from its sign-in, rather than Seerr's 30 days: past it, the Handler
+	// leaves the session cookie out of the requests it forwards, and Seerr
+	// sends the browser to sign in again.
+	SessionDuration time.Duration
 
 	once  sync.Once
 	proxy *httputil.ReverseProxy
+	// key signs sessionLimitCookie: random, so a restart signs everyone in
+	// again.
+	key []byte
+	// clock is the time, time.Now unless set by a test.
+	clock func() time.Time
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.once.Do(func() {
+		h.key = make([]byte, 32)
+		rand.Read(h.key)
 		h.proxy = &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(h.Seerr)
@@ -76,8 +91,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						pr.Out.Header[name] = v
 					}
 				}
+				// The limit is the Handler's alone, and past it, the session
+				// is as good as gone.
+				drop := []string{sessionLimitCookie}
+				if h.SessionDuration > 0 && !h.sessionValid(pr.In) {
+					drop = append(drop, sessionCookie)
+				}
+				dropCookies(pr.Out.Header, drop...)
 			},
-			ModifyResponse: markSignedOut,
+			ModifyResponse: func(resp *http.Response) error {
+				markSignedOut(resp)
+				h.limitSessions(resp.Header)
+				return nil
+			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				clog.WarnContext(r.Context(), "forwarding to seerr", "error", err)
 				w.WriteHeader(http.StatusBadGateway)
@@ -115,12 +141,11 @@ func serveLoginPage(w http.ResponseWriter, r *http.Request) {
 
 // markSignedOut marks the browser that signed out of Seerr with
 // signedOutCookie.
-func markSignedOut(resp *http.Response) error {
+func markSignedOut(resp *http.Response) {
 	r := resp.Request
 	if r.Method == http.MethodPost && strings.EqualFold(r.URL.Path, "/api/v1/auth/logout") && resp.StatusCode == http.StatusOK {
 		resp.Header.Add("Set-Cookie", (&http.Cookie{Name: signedOutCookie, Value: "1", Path: "/", MaxAge: 300, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}).String())
 	}
-	return nil
 }
 
 // statusError is a call answered with a status other than the one wanted.
@@ -281,6 +306,7 @@ func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 	for _, c := range session {
 		w.Header().Add("Set-Cookie", c)
 	}
+	h.limitSessions(w.Header())
 	clog.InfoContext(ctx, "signed in to seerr", "user", name)
 	// A page sending the browser on, not a redirect: the browser came
 	// through redirects from the identity provider, another site, and

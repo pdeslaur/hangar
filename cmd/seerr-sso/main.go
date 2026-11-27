@@ -32,6 +32,9 @@ type config struct {
 	// UserHeader is the header the reverse proxy names the signed-in user
 	// in, on requests to /sso/.
 	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
+	// SessionDuration is how long a Seerr session lasts from its sign-in,
+	// rather than Seerr's 30 days; 0 leaves Seerr's.
+	SessionDuration time.Duration `env:"SESSION_DURATION,default=8h"`
 }
 
 func main() {
@@ -55,9 +58,10 @@ func run(ctx context.Context, cfg *config) error {
 	}
 	srv := &http.Server{
 		Handler: &seerrsso.Handler{
-			Seerr:      seerr,
-			Bridge:     cfg.BridgeURL,
-			UserHeader: cfg.UserHeader,
+			Seerr:           seerr,
+			Bridge:          cfg.BridgeURL,
+			UserHeader:      cfg.UserHeader,
+			SessionDuration: cfg.SessionDuration,
 			Client: &http.Client{
 				Timeout: 30 * time.Second,
 				CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -76,7 +80,7 @@ func run(ctx context.Context, cfg *config) error {
 	if err := systemd.Ready(); err != nil {
 		return err
 	}
-	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "seerr", cfg.SeerrURL, "bridge", cfg.BridgeURL)
+	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "seerr", cfg.SeerrURL, "bridge", cfg.BridgeURL, "session", cfg.SessionDuration)
 	if err := srv.Serve(lis); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
