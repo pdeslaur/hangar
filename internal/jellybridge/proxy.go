@@ -184,7 +184,7 @@ const scriptTag = `<script src="/sso-static/bridge.js"></script>`
 const maxWebPage = 1 << 20
 
 // addScript adds scriptTag to jellyfin-web's page, before its </head>. The
-// page it changes loses its validators, so that no browser keeps a copy
+// page it changes is uncached, so that no browser keeps a copy
 // without the script. A page it can't change goes on as it is: jellyfin-web
 // works without the script, until its token expires.
 func addScript(resp *http.Response) error {
@@ -206,8 +206,7 @@ func addScript(resp *http.Response) error {
 	}
 	resp.Body.Close()
 	setBody(resp, slices.Concat(page[:head], []byte(scriptTag), page[head:]))
-	resp.Header.Del("Etag")
-	resp.Header.Del("Last-Modified")
+	uncached(resp)
 	return nil
 }
 
@@ -324,7 +323,7 @@ var menuLink = map[string]string{"name": "My devices", "icon": "devices", "url":
 const maxWebConfig = 1 << 20
 
 // addMenuLink adds menuLink to the menuLinks of jellyfin-web's config.json.
-// Like addScript, the config it changes loses its validators, and a config
+// Like addScript, the config it changes is uncached, and a config
 // it can't change goes on as it is.
 func addMenuLink(resp *http.Response) error {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Encoding") != "" || resp.Request.Method != http.MethodGet {
@@ -361,7 +360,15 @@ func addMenuLink(resp *http.Response) error {
 		return err
 	}
 	setBody(resp, out)
+	uncached(resp)
+	return nil
+}
+
+// uncached keeps browsers from using resp, a response the bridge changed,
+// without asking again: Jellyfin sends its web files with validators and no
+// Cache-Control, which browsers keep for a while, at a guess, without asking.
+func uncached(resp *http.Response) {
 	resp.Header.Del("Etag")
 	resp.Header.Del("Last-Modified")
-	return nil
+	resp.Header.Set("Cache-Control", "no-cache")
 }
