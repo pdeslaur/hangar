@@ -1,7 +1,7 @@
 // Command seerr-sso signs Seerr's users in through single sign-on. It runs
 // in Seerr's pod, between the reverse proxy doing the sign-on and Seerr,
 // and signs users in with Seerr's own Jellyfin Quick Connect sign-in, its
-// code approved by jellyfin-bridge for the user the sign-on names.
+// code approved by jellyfin-sso for the user the sign-on names.
 package main
 
 import (
@@ -26,12 +26,12 @@ type config struct {
 	Addr string `env:"ADDR,default=127.0.0.1:5056"`
 	// SeerrURL is Seerr's.
 	SeerrURL string `env:"SEERR_URL,default=http://127.0.0.1:5055"`
-	// BridgeURL is jellyfin-bridge's internal address, its INTERNAL_ADDR,
+	// JellyfinSSOURL is jellyfin-sso's internal address, its INTERNAL_ADDR,
 	// like through an mTLS tunnel.
-	BridgeURL string `env:"BRIDGE_URL,required"`
+	JellyfinSSOURL string `env:"JELLYFIN_SSO_URL,required"`
 	// UserHeader is the header the reverse proxy names the signed-in user
 	// in, on requests to /sso/.
-	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
+	UserHeader string `env:"USER_HEADER,default=X-SSO-User"`
 	// SessionDuration is how long a Seerr session lasts from its sign-in,
 	// rather than Seerr's 30 days; 0 leaves Seerr's.
 	SessionDuration time.Duration `env:"SESSION_DURATION,default=8h"`
@@ -59,7 +59,7 @@ func run(ctx context.Context, cfg *config) error {
 	srv := &http.Server{
 		Handler: &seerrsso.Handler{
 			Seerr:           seerr,
-			Bridge:          cfg.BridgeURL,
+			JellyfinSSO:     cfg.JellyfinSSOURL,
 			UserHeader:      cfg.UserHeader,
 			SessionDuration: cfg.SessionDuration,
 			Client: &http.Client{
@@ -80,7 +80,7 @@ func run(ctx context.Context, cfg *config) error {
 	if err := systemd.Ready(); err != nil {
 		return err
 	}
-	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "seerr", cfg.SeerrURL, "bridge", cfg.BridgeURL, "session", cfg.SessionDuration)
+	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "seerr", cfg.SeerrURL, "jellyfin_sso", cfg.JellyfinSSOURL, "session", cfg.SessionDuration)
 	if err := srv.Serve(lis); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

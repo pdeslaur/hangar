@@ -1,7 +1,7 @@
-// Package jellybridge puts Jellyfin behind single sign-on: it hands clients
+// Package jellyfinsso puts Jellyfin behind single sign-on: it hands clients
 // tokens of its own, and forwards their requests to Jellyfin with the
 // Jellyfin token of each one's session, which never leaves it.
-package jellybridge
+package jellyfinsso
 
 import (
 	"bytes"
@@ -24,25 +24,25 @@ import (
 	"github.com/pdeslaur/hangar/internal/jellyfin"
 )
 
-// forwardedHeaders are the ones Caddy sets in front of the bridge, which a
+// forwardedHeaders are the ones Caddy sets in front of jellyfin-sso, which a
 // ReverseProxy with Rewrite would drop.
 var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
-// Proxy forwards requests to Jellyfin, swapping each bridge token for its
+// Proxy forwards requests to Jellyfin, swapping each jellyfin-sso token for its
 // session's Jellyfin token.
 //
 // It removes every token from a request, wherever Jellyfin would read one,
-// and sends Jellyfin the Jellyfin token of the session whose bridge token
+// and sends Jellyfin the Jellyfin token of the session whose jellyfin-sso token
 // it found, in an Authorization header, or none: a Jellyfin token sent to
-// the bridge, an unknown or an expired one, reaches Jellyfin as no token at
+// jellyfin-sso, an unknown or an expired one, reaches Jellyfin as no token at
 // all. Jellyfin gets the device's ID from the session, and the rest of the
 // device's description from the client when it gives one.
 //
-// It adds the bridge's script, /sso-static/bridge.js, to jellyfin-web's
+// It adds jellyfin-sso's script, /sso-static/sso.js, to jellyfin-web's
 // page, and a link to its account page, My devices, to jellyfin-web's menu.
 //
-// Jellyfin's logins go through Apps: a password login is the bridge's, the
-// result of a Quick Connect login gets a bridge token in place of
+// Jellyfin's logins go through Apps: a password login is jellyfin-sso's, the
+// result of a Quick Connect login gets a jellyfin-sso token in place of
 // Jellyfin's, and the obsolete password login and password resets are
 // refused.
 type Proxy struct {
@@ -73,7 +73,7 @@ func NewProxy(target *url.URL, apps *Apps) *Proxy {
 	return p
 }
 
-// route is what the bridge does with a request to Jellyfin.
+// route is what jellyfin-sso does with a request to Jellyfin.
 type route int
 
 const (
@@ -88,7 +88,7 @@ const (
 	// quickConnectLogin is Jellyfin's Quick Connect login, whose result
 	// Apps adopts.
 	quickConnectLogin
-	// logout is Jellyfin's logout, which ends the bridge session.
+	// logout is Jellyfin's logout, which ends jellyfin-sso session.
 	logout
 	// refused never reaches Jellyfin.
 	refused
@@ -133,7 +133,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch rt {
 	case webPage, webConfig:
 		// Whole and uncompressed, for addScript and addMenuLink to change: a
-		// browser may hold a copy from before the bridge, which Jellyfin
+		// browser may hold a copy from before jellyfin-sso, which Jellyfin
 		// would let it keep.
 		for _, h := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
 			r.Header.Del(h)
@@ -181,8 +181,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.proxy.ServeHTTP(w, r)
 }
 
-// scriptTag adds the bridge's script to jellyfin-web.
-const scriptTag = `<script src="/sso-static/bridge.js"></script>`
+// scriptTag adds jellyfin-sso's script to jellyfin-web.
+const scriptTag = `<script src="/sso-static/sso.js"></script>`
 
 // maxWebPage bounds the size of jellyfin-web's page that addScript reads.
 const maxWebPage = 1 << 20
@@ -201,7 +201,7 @@ func addScript(resp *http.Response) error {
 	}
 	head := bytes.Index(page, []byte("</head>"))
 	if len(page) > maxWebPage || head < 0 {
-		clog.WarnContext(resp.Request.Context(), "can't add the bridge's script to jellyfin-web's page", "size", len(page))
+		clog.WarnContext(resp.Request.Context(), "can't add jellyfin-sso's script to jellyfin-web's page", "size", len(page))
 		resp.Body = struct {
 			io.Reader
 			io.Closer
@@ -241,7 +241,7 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 	return nil
 }
 
-// adoptLogin gives an app a bridge token in place of the Jellyfin token of
+// adoptLogin gives an app a jellyfin-sso token in place of the Jellyfin token of
 // a Quick Connect login's result. A result it can't adopt fails the
 // request, rather than reaching the app with Jellyfin's token.
 func (p *Proxy) adoptLogin(resp *http.Response) error {
@@ -269,12 +269,12 @@ func (p *Proxy) adoptLogin(resp *http.Response) error {
 	return nil
 }
 
-// signedOutCookie tells bridge.js that jellyfin-web signed out, rather
+// signedOutCookie tells sso.js that jellyfin-web signed out, rather
 // than lost its token: it then signs out of the single sign-on too, at
 // /sso/logout.
-const signedOutCookie = "jellyfin-bridge-signed-out"
+const signedOutCookie = "jellyfin-sso-signed-out"
 
-// serveLogout answers Jellyfin's logout, with a bridge token, by ending its
+// serveLogout answers Jellyfin's logout, with a jellyfin-sso token, by ending its
 // session: forwarded, it would end the session's Jellyfin token and leave
 // the session holding it. A browser's gets signedOutCookie. A session
 // another request ended first, as jellyfin-web logging out twice at once
@@ -298,9 +298,9 @@ func (p *Proxy) serveLogout(w http.ResponseWriter, r *http.Request, session Sess
 }
 
 // logRefused logs a request whose token found no session, which reaches
-// Jellyfin without one, and why: a bridge token past its expiry, as a
+// Jellyfin without one, and why: a jellyfin-sso token past its expiry, as a
 // browser holding a stale one sends, of a session unused too long, or a
-// token the bridge doesn't know.
+// token jellyfin-sso doesn't know.
 func (p *Proxy) logRefused(ctx context.Context, r *http.Request, tok string) {
 	session, expires, err := p.apps.Sessions.RefusedToken(ctx, tok)
 	switch {
@@ -313,7 +313,7 @@ func (p *Proxy) logRefused(ctx context.Context, r *http.Request, tok string) {
 		if now := p.apps.Sessions.now(); expires != nil && !expires.After(now) {
 			reason = "expired " + now.Sub(*expires).Round(time.Second).String() + " ago"
 		}
-		clog.WarnContext(ctx, "refused a bridge token", "reason", reason, "method", r.Method, "path", r.URL.Path,
+		clog.WarnContext(ctx, "refused a jellyfin-sso token", "reason", reason, "method", r.Method, "path", r.URL.Path,
 			"session", session.ID, "username", session.Username, "client", session.Device.Client, "device", session.Device.Name)
 	}
 }
@@ -321,7 +321,7 @@ func (p *Proxy) logRefused(ctx context.Context, r *http.Request, tok string) {
 // checkSession deletes session if Jellyfin no longer takes its token, which
 // Jellyfin answering 401 to a request with it suggests: an administrator
 // deleted its device, say. Its client then signs in again, rather than
-// holding a bridge token that works nowhere.
+// holding a jellyfin-sso token that works nowhere.
 func (p *Proxy) checkSession(ctx context.Context, session Session) {
 	valid, err := p.apps.Jellyfin.Valid(ctx, session.JellyfinToken)
 	if err != nil || valid {
@@ -359,7 +359,7 @@ func addMenuLink(resp *http.Response) error {
 		return err
 	}
 	if len(raw) > maxWebConfig {
-		clog.WarnContext(resp.Request.Context(), "can't add the bridge's link to jellyfin-web's config", "size", len(raw))
+		clog.WarnContext(resp.Request.Context(), "can't add jellyfin-sso's link to jellyfin-web's config", "size", len(raw))
 		resp.Body = struct {
 			io.Reader
 			io.Closer
@@ -374,7 +374,7 @@ func addMenuLink(resp *http.Response) error {
 		err = json.Unmarshal(config["menuLinks"], &links)
 	}
 	if err != nil {
-		clog.WarnContext(resp.Request.Context(), "can't add the bridge's link to jellyfin-web's config", "error", err)
+		clog.WarnContext(resp.Request.Context(), "can't add jellyfin-sso's link to jellyfin-web's config", "error", err)
 		setBody(resp, raw)
 		return nil
 	}
@@ -389,7 +389,7 @@ func addMenuLink(resp *http.Response) error {
 	return nil
 }
 
-// uncached keeps browsers from using resp, a response the bridge changed,
+// uncached keeps browsers from using resp, a response jellyfin-sso changed,
 // without asking again: Jellyfin sends its web files with validators and no
 // Cache-Control, which browsers keep for a while, at a guess, without asking.
 func uncached(resp *http.Response) {

@@ -24,7 +24,7 @@ func TestJellyfin(t *testing.T) {
 		t.Error("UserID found carol")
 	}
 
-	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "bridge-test-1", Version: "10.11.0"}
+	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "sso-test-1", Version: "10.11.0"}
 	// login logs device in as userID, called name, returning its token.
 	login := func(userID, name string) string {
 		t.Helper()

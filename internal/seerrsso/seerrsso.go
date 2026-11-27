@@ -1,10 +1,10 @@
 // Package seerrsso signs Seerr's users in through single sign-on, with
-// Seerr's own Jellyfin Quick Connect sign-in, approved by jellyfin-bridge.
+// Seerr's own Jellyfin Quick Connect sign-in, approved by jellyfin-sso.
 //
 // The Handler sits between the reverse proxy and Seerr, which it forwards
 // everything to but its own paths. The reverse proxy signs users in on
 // /sso/* and names them in UserHeader. On GET /sso/login, the Handler
-// starts a Quick Connect sign-in in Seerr, has jellyfin-bridge approve its
+// starts a Quick Connect sign-in in Seerr, has jellyfin-sso approve its
 // code for the user, finishes it, and hands the browser the session cookie
 // Seerr set, its own calls carrying a CSRF token when Seerr's CSRF
 // protection is on. Seerr's own login page sends the browser there. With a
@@ -54,13 +54,13 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 type Handler struct {
 	// Seerr is Seerr's address, like http://127.0.0.1:5055.
 	Seerr *url.URL
-	// Bridge is jellyfin-bridge's internal address, like
+	// JellyfinSSO is jellyfin-sso's internal address, like
 	// http://jellyfin:8098.
-	Bridge string
+	JellyfinSSO string
 	// UserHeader is the request header naming the signed-in user, on
 	// /sso/*.
 	UserHeader string
-	// Client calls Seerr and jellyfin-bridge.
+	// Client calls Seerr and jellyfin-sso.
 	Client *http.Client
 	// SessionDuration, if positive, limits how long a Seerr session lasts,
 	// from its sign-in, rather than Seerr's 30 days: past it, the Handler
@@ -267,9 +267,9 @@ func (h *Handler) serveLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	approve := map[string]string{"Code": started.Code, "User": name}
-	if _, err := h.call(ctx, r, http.MethodPost, strings.TrimSuffix(h.Bridge, "/")+"/bridge/quickconnect", nil, approve, nil, http.StatusNoContent); err != nil {
+	if _, err := h.call(ctx, r, http.MethodPost, strings.TrimSuffix(h.JellyfinSSO, "/")+"/internal/quickconnect", nil, approve, nil, http.StatusNoContent); err != nil {
 		if isStatus(err, http.StatusForbidden) {
-			clog.WarnContext(ctx, "jellyfin-bridge knows no user", "user", name)
+			clog.WarnContext(ctx, "jellyfin-sso knows no user", "user", name)
 			http.Error(w, "No Jellyfin user for "+name+".", http.StatusForbidden)
 			return
 		}

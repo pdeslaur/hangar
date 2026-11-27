@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"bytes"
@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/hangar/internal/jellybridge/web"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
+	"github.com/pdeslaur/hangar/internal/jellyfinsso/web"
 )
 
 // maxRequest bounds the body of a request to /sso/.
@@ -27,7 +27,12 @@ const maxDeviceID = 1024
 
 // deviceCookie holds a browser's device ID, so that signing in again, once
 // its token has expired, finds its session rather than making another.
-const deviceCookie = "jellyfin-bridge-device"
+const deviceCookie = "jellyfin-sso-device"
+
+// formerDeviceCookie is deviceCookie under jellyfin-sso's former name,
+// jellyfin-bridge: a browser holding it keeps its session, its device ID
+// moving to deviceCookie.
+const formerDeviceCookie = "jellyfin-bridge-device"
 
 // deviceCookieAge is how long deviceCookie lasts unused: browsers keep a
 // cookie 400 days at most.
@@ -35,16 +40,16 @@ const deviceCookieAge = 400 * 24 * time.Hour
 
 // browserDevice describes a browser's device to Jellyfin until jellyfin-web
 // sends its own description.
-var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser", Version: "jellyfin-bridge"}
+var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser", Version: "jellyfin-sso"}
 
-// SSO serves the bridge's pages, under /sso/, to the user the single
+// SSO serves jellyfin-sso's pages, under /sso/, to the user the single
 // sign-on in front of it names:
 //
-//   - GET /sso/login, a page signing jellyfin-web in: it stores a bridge
+//   - GET /sso/login, a page signing jellyfin-web in: it stores a jellyfin-sso
 //     token for the user's session on the browser where jellyfin-web reads
-//     its credentials, with bridge.js, then opens jellyfin-web.
-//   - POST /sso/session, answering a bridge token for the same session as
-//     JSON, which bridge.js asks for to refresh it: {"AccessToken",
+//     its credentials, with sso.js, then opens jellyfin-web.
+//   - POST /sso/session, answering a jellyfin-sso token for the same session as
+//     JSON, which sso.js asks for to refresh it: {"AccessToken",
 //     "UserId", "ServerId", "DeviceId", "ExpiresIn", "RefreshBefore"}.
 //   - GET /sso/, the account page, "My devices": signing apps in, and the
 //     user's sessions. Its forms post to POST /sso/quickconnect, signing in
@@ -53,8 +58,8 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 //     and POST /sso/revoke, ending a session. Each answers the page, whose
 //     parts Unpoly swaps in.
 //   - GET /sso/logout, sending the browser back to jellyfin-web, which
-//     signs in again: bridge.js opens it once jellyfin-web signs out, for
-//     the single sign-on to sign out too, and it reaches the bridge only
+//     signs in again: sso.js opens it once jellyfin-web signs out, for
+//     the single sign-on to sign out too, and it reaches jellyfin-sso only
 //     when the single sign-on doesn't.
 //
 // The browser's device ID is in deviceCookie, set on its first sign-in.
@@ -64,7 +69,7 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 // another site are refused.
 //
 // It also serves their static files, under /sso-static/, without a user:
-// bridge.js, the script keeping jellyfin-web signed in, which the Proxy
+// sso.js, the script keeping jellyfin-web signed in, which the Proxy
 // adds to jellyfin-web and which loads before anyone has signed in;
 // style.css; and Unpoly. So the sign-on covers /sso/* whole, and nothing
 // under /sso-static/.
@@ -214,7 +219,7 @@ func render(w http.ResponseWriter, r *http.Request, status int, name string, dat
 	w.Write(page.Bytes())
 }
 
-// sessionResponse is a browser's bridge token, named as jellyfin-web's
+// sessionResponse is a browser's jellyfin-sso token, named as jellyfin-web's
 // credentials name them.
 type sessionResponse struct {
 	AccessToken string
@@ -228,16 +233,23 @@ type sessionResponse struct {
 	RefreshBefore int64
 }
 
-// signIn returns a bridge token for the user's session on the browser
+// signIn returns a jellyfin-sso token for the user's session on the browser
 // deviceCookie names, setting a new one if it names none. The session is
 // made if it doesn't exist.
 func (s *SSO) signIn(w http.ResponseWriter, r *http.Request, u user) (sessionResponse, error) {
 	ctx := r.Context()
 	var deviceID string
-	if c, err := r.Cookie(deviceCookie); err == nil && c.Value != "" && len(c.Value) <= maxDeviceID {
-		deviceID = c.Value
-	} else {
+	for _, name := range []string{deviceCookie, formerDeviceCookie} {
+		if c, err := r.Cookie(name); err == nil && c.Value != "" && len(c.Value) <= maxDeviceID {
+			deviceID = c.Value
+			break
+		}
+	}
+	if deviceID == "" {
 		deviceID = rand.Text()
+	}
+	if _, err := r.Cookie(formerDeviceCookie); err == nil {
+		http.SetCookie(w, &http.Cookie{Name: formerDeviceCookie, Path: "/sso/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	}
 	// Set again, to last deviceCookieAge from its last use.
 	http.SetCookie(w, &http.Cookie{

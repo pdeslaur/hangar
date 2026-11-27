@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"net/http"
@@ -10,20 +10,20 @@ import (
 
 // Internal answers the requests of the services trusted to sign their
 // users in, on a listener only they reach, like through an mTLS tunnel:
-// POST /bridge/quickconnect approves a Quick Connect code for a user, by
+// POST /internal/quickconnect approves a Quick Connect code for a user, by
 // the single sign-on's name, {"Code": "123456", "User": "phil"}, mapped
 // as on /sso/. The service, holding the code's secret, then logs in with
-// it, through the Proxy, which hands it a bridge token.
+// it, through the Proxy, which hands it a jellyfin-sso token.
 //
 // A service reaching it signs in as any user Users allows, so it trusts
 // the service as much as the reverse proxy setting UserHeader.
 func (s *SSO) Internal() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /bridge/quickconnect", s.serveInternalQuickConnect)
+	mux.HandleFunc("POST /internal/quickconnect", s.serveInternalQuickConnect)
 	return mux
 }
 
-// quickConnectRequest is a request of POST /bridge/quickconnect.
+// quickConnectRequest is a request of POST /internal/quickconnect.
 type quickConnectRequest struct {
 	Code string
 	User string

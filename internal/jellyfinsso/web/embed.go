@@ -1,4 +1,4 @@
-// Package web is the bridge's pages under /sso/, as html/template
+// Package web is jellyfin-sso's pages under /sso/, as html/template
 // templates, and the static files they use under /sso-static/, Unpoly's
 // among them: nothing here is built.
 package web
@@ -19,7 +19,7 @@ var static embed.FS
 // document.
 var Templates = template.Must(template.ParseFS(templates, "templates/*.html"))
 
-// Static is the files under /sso-static/: bridge.js, style.css, and
+// Static is the files under /sso-static/: sso.js, style.css, and
 // Unpoly's unpoly.min.js and unpoly.min.css.
 var Static = func() fs.FS {
 	sub, err := fs.Sub(static, "static")
