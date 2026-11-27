@@ -30,6 +30,10 @@ import (
 type config struct {
 	// Addr is where it listens: the reverse proxy's upstream.
 	Addr string `env:"ADDR,default=127.0.0.1:8097"`
+	// InternalAddr, if set, is where the services trusted to sign their
+	// users in reach it, like through an mTLS tunnel, and only they: Jellyfin
+	// through the bridge, as on Addr, and /bridge/, without /sso/.
+	InternalAddr string `env:"INTERNAL_ADDR"`
 	// JellyfinURL is Jellyfin's, which nothing else should reach.
 	JellyfinURL string `env:"JELLYFIN_URL,default=http://127.0.0.1:8096"`
 	// JellyfinDB is Jellyfin's database, where it writes its API key, a
@@ -145,16 +149,42 @@ func run(ctx context.Context, cfg *config) error {
 		BrowserTTL:    cfg.BrowserTTL,
 		RefreshBefore: cfg.RefreshBefore,
 	}
+	proxy := jellybridge.NewProxy(target, apps)
 	mux.Handle("/sso/", sso)
 	mux.Handle("/sso-static/", sso)
-	mux.Handle("/", jellybridge.NewProxy(target, apps))
+	mux.Handle("/", proxy)
+	handlers := map[string]http.Handler{cfg.Addr: mux}
+	if cfg.InternalAddr != "" {
+		internal := http.NewServeMux()
+		internal.Handle("/bridge/", sso.Internal())
+		internal.Handle("/", proxy)
+		handlers[cfg.InternalAddr] = internal
+	}
 
-	lis, err := net.Listen("tcp", cfg.Addr)
-	if err != nil {
+	errs := make(chan error, len(handlers))
+	for addr, handler := range handlers {
+		lis, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
+		go func() { errs <- serve(ctx, lis, handler) }()
+	}
+	if err := systemd.Ready(); err != nil {
 		return err
 	}
+	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "internal", cfg.InternalAddr, "jellyfin", cfg.JellyfinURL, "server", serverID)
+	for range handlers {
+		if err := <-errs; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// serve serves handler on lis until ctx is done.
+func serve(ctx context.Context, lis net.Listener, handler http.Handler) error {
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -163,10 +193,6 @@ func run(ctx context.Context, cfg *config) error {
 		defer cancel()
 		srv.Shutdown(shutdown)
 	}()
-	if err := systemd.Ready(); err != nil {
-		return err
-	}
-	clog.InfoContext(ctx, "listening", "addr", cfg.Addr, "jellyfin", cfg.JellyfinURL, "server", serverID)
 	if err := srv.Serve(lis); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
