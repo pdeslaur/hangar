@@ -83,12 +83,41 @@ func TestStoreTokens(t *testing.T) {
 		t.Errorf("Lookup of the refreshed token: %+v, %v", got, err)
 	}
 
+	// A refused token's session, while the bridge keeps it.
+	got, expires, err := s.RefusedToken(ctx, short)
+	if err != nil || got.ID != session.ID || expires == nil || !expires.Equal(c.t.Add(-time.Hour)) {
+		t.Errorf("RefusedToken of the expired token: %+v, %v, %v", got, expires, err)
+	}
+	for _, token := range []string{"", "unknown", "real"} {
+		if _, _, err := s.RefusedToken(ctx, token); !errors.Is(err, errNoSession) {
+			t.Errorf("RefusedToken(%q): %v, want errNoSession", token, err)
+		}
+	}
+
+	// An expired token stays a day, for RefusedToken.
+	countTokens := func() int {
+		t.Helper()
+		var n int
+		if err := s.db.Raw(`SELECT count(*) FROM tokens`).Row().Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
 	if err := s.DeleteExpiredTokens(ctx); err != nil {
 		t.Fatal(err)
 	}
-	var n int
-	if err := s.db.Raw(`SELECT count(*) FROM tokens`).Row().Scan(&n); err != nil || n != 1 {
-		t.Errorf("tokens left after DeleteExpiredTokens: %d, %v", n, err)
+	if n := countTokens(); n != 2 {
+		t.Errorf("tokens left after DeleteExpiredTokens, within a day: %d", n)
+	}
+	c.t = c.t.Add(24 * time.Hour)
+	if err := s.DeleteExpiredTokens(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := countTokens(); n != 1 {
+		t.Errorf("tokens left after DeleteExpiredTokens, past a day: %d", n)
+	}
+	if _, _, err := s.RefusedToken(ctx, short); !errors.Is(err, errNoSession) {
+		t.Errorf("RefusedToken of a deleted token: %v", err)
 	}
 }
 

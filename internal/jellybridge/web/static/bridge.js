@@ -4,9 +4,13 @@
 // made. In jellyfin-web, where the bridge adds this script, it refreshes
 // the token when the bridge's RefreshBefore is all it has left, and sends
 // jellyfin-web's own login and server pages to the bridge's: signing in is
-// the bridge's. Once jellyfin-web signs out, which the bridge marks with a
-// cookie, it signs out of the single sign-on too.
+// the bridge's. It keeps jellyfin-web on the token the bridge last gave,
+// which a page open since before a refresh would put back an older one of.
+// Once jellyfin-web signs out, which the bridge marks with a cookie, it
+// signs out of the single sign-on too.
 (() => {
+	const credentialsKey = "jellyfin_credentials";
+	const sessionKey = "jellyfin-bridge-session";
 	const expiresKey = "jellyfin-bridge-expires";
 	const refreshBeforeKey = "jellyfin-bridge-refresh-before";
 	const signedOutCookie = "jellyfin-bridge-signed-out";
@@ -17,8 +21,14 @@
 	// ServerId, DeviceId, ExpiresIn, RefreshBefore}, where jellyfin-web
 	// reads its credentials, with the browser's device ID.
 	function store(session) {
+		// First: the credentials written next are checked against it.
+		localStorage.setItem(sessionKey, JSON.stringify({
+			AccessToken: session.AccessToken,
+			UserId: session.UserId,
+			ServerId: session.ServerId,
+		}));
 		localStorage.setItem("_deviceId2", session.DeviceId);
-		const credentials = JSON.parse(localStorage.getItem("jellyfin_credentials") || "{}");
+		const credentials = JSON.parse(localStorage.getItem(credentialsKey) || "{}");
 		const servers = (credentials.Servers || []).filter((s) => s.Id !== session.ServerId);
 		servers.unshift({
 			Id: session.ServerId,
@@ -29,12 +39,60 @@
 			DateLastAccessed: Date.now(),
 		});
 		credentials.Servers = servers;
-		localStorage.setItem("jellyfin_credentials", JSON.stringify(credentials));
+		localStorage.setItem(credentialsKey, JSON.stringify(credentials));
 		localStorage.setItem(expiresKey, String(Date.now() + session.ExpiresIn * 1000));
 		localStorage.setItem(refreshBeforeKey, String(session.RefreshBefore * 1000));
-		// The running jellyfin-web, if any, sends the new token from now on.
-		if (window.ApiClient && typeof window.ApiClient.serverId === "function" && window.ApiClient.serverId() === session.ServerId) {
-			window.ApiClient.setAuthenticationInfo(session.AccessToken, session.UserId);
+		syncClient();
+	}
+
+	// current returns the session the bridge last gave this browser,
+	// {AccessToken, UserId, ServerId}, or null.
+	function current() {
+		try {
+			const session = JSON.parse(localStorage.getItem(sessionKey) || "null");
+			return session && session.AccessToken && session.ServerId ? session : null;
+		} catch {
+			return null;
+		}
+	}
+
+	// heal returns jellyfin-web's credentials, as JSON, with the bridge's
+	// server holding the token the bridge last gave, in place of another
+	// one. jellyfin-web keeps its credentials in memory, and writes them all
+	// back now and then: a page open since before a refresh, here or in
+	// another tab, would put back a token that has expired. A signed-out
+	// server, without a token, stays so.
+	function heal(json) {
+		const session = current();
+		if (!session || !json) {
+			return json;
+		}
+		let credentials;
+		try {
+			credentials = JSON.parse(json);
+		} catch {
+			return json;
+		}
+		const server = (credentials.Servers || []).find((s) => s.Id === session.ServerId);
+		if (!server || !server.AccessToken || server.AccessToken === session.AccessToken) {
+			return json;
+		}
+		server.AccessToken = session.AccessToken;
+		server.UserId = session.UserId;
+		return JSON.stringify(credentials);
+	}
+
+	// syncClient has the running jellyfin-web, if any, send the token the
+	// bridge last gave, unless it signed out.
+	function syncClient() {
+		const session = current();
+		const client = window.ApiClient;
+		if (!session || !client || typeof client.serverId !== "function" || client.serverId() !== session.ServerId) {
+			return;
+		}
+		const token = client.accessToken();
+		if (token && token !== session.AccessToken) {
+			client.setAuthenticationInfo(session.AccessToken, session.UserId);
 		}
 	}
 
@@ -71,6 +129,28 @@
 		location.replace(loginPage);
 		return;
 	}
+
+	// Keep jellyfin-web's credentials on the bridge's last token: as they
+	// are, before jellyfin-web reads them, and as it writes them.
+	const stored = localStorage.getItem(credentialsKey);
+	const healed = heal(stored);
+	if (healed !== stored) {
+		console.warn("jellyfin-bridge: replaced a stale token in jellyfin-web's credentials");
+		localStorage.setItem(credentialsKey, healed);
+	}
+	const setItem = Storage.prototype.setItem;
+	Storage.prototype.setItem = function (key, value) {
+		if (this === localStorage && key === credentialsKey) {
+			value = heal(String(value));
+		}
+		return setItem.call(this, key, value);
+	};
+	// Another tab refreshed the token.
+	window.addEventListener("storage", (e) => {
+		if (e.key === sessionKey) {
+			syncClient();
+		}
+	});
 
 	// addMenuItems adds "My devices", the bridge's account page, after the
 	// Quick Connect item of jellyfin-web's user menu, which has no setting
@@ -138,6 +218,7 @@
 
 	let refreshing = false;
 	async function check() {
+		syncClient();
 		const expires = Number(localStorage.getItem(expiresKey));
 		const refreshBefore = Number(localStorage.getItem(refreshBeforeKey));
 		if (!expires || !refreshBefore || refreshing) {

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/chainguard-dev/clog"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
@@ -165,6 +166,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", device.Header(session.JellyfinToken))
 		r = r.WithContext(context.WithValue(ctx, sessionKey{}, session))
 	case errors.Is(err, errNoSession):
+		if c.token != "" {
+			p.logRefused(ctx, r, c.token)
+		}
 		// Anonymous, still naming its device: Quick Connect needs it.
 		if c.device != (jellyfin.Device{}) {
 			r.Header.Set("Authorization", c.device.Header(""))
@@ -291,6 +295,27 @@ func (p *Proxy) serveLogout(w http.ResponseWriter, r *http.Request, session Sess
 			"client", session.Device.Client, "device", session.Device.Name)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// logRefused logs a request whose token found no session, which reaches
+// Jellyfin without one, and why: a bridge token past its expiry, as a
+// browser holding a stale one sends, of a session unused too long, or a
+// token the bridge doesn't know.
+func (p *Proxy) logRefused(ctx context.Context, r *http.Request, tok string) {
+	session, expires, err := p.apps.Sessions.RefusedToken(ctx, tok)
+	switch {
+	case errors.Is(err, errNoSession):
+		clog.WarnContext(ctx, "refused an unknown token", "method", r.Method, "path", r.URL.Path)
+	case err != nil:
+		clog.WarnContext(ctx, "looking up a refused token", "error", err)
+	default:
+		reason := "its session is idle"
+		if now := p.apps.Sessions.now(); expires != nil && !expires.After(now) {
+			reason = "expired " + now.Sub(*expires).Round(time.Second).String() + " ago"
+		}
+		clog.WarnContext(ctx, "refused a bridge token", "reason", reason, "method", r.Method, "path", r.URL.Path,
+			"session", session.ID, "username", session.Username, "client", session.Device.Client, "device", session.Device.Name)
+	}
 }
 
 // checkSession deletes session if Jellyfin no longer takes its token, which
