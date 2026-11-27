@@ -236,9 +236,29 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return result.Error
 }
 
-// DeleteExpiredTokens deletes the tokens past their expiry.
+// keepExpired is how long a token is kept past its expiry, which Lookup
+// refuses it after, for RefusedToken to tell it from an unknown one.
+const keepExpired = 24 * time.Hour
+
+// RefusedToken returns the session of a token Lookup refused, with the
+// token's expiry, nil if it has none: a token expired within keepExpired,
+// or of a session unused for idle. It returns errNoSession for a token the
+// bridge doesn't know.
+func (s *Store) RefusedToken(ctx context.Context, tok string) (Session, *time.Time, error) {
+	var t token
+	err := s.db.WithContext(ctx).Preload("Session").Where("hash = ?", hashToken(tok)).Take(&t).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) || err == nil && t.Session == nil {
+		return Session{}, nil, errNoSession
+	}
+	if err != nil {
+		return Session{}, nil, err
+	}
+	return *t.Session, t.Expires, nil
+}
+
+// DeleteExpiredTokens deletes the tokens past their expiry by keepExpired.
 func (s *Store) DeleteExpiredTokens(ctx context.Context) error {
 	return s.db.WithContext(ctx).
-		Where("expires IS NOT NULL AND expires <= ?", s.now().UTC()).
+		Where("expires IS NOT NULL AND expires <= ?", s.now().Add(-keepExpired).UTC()).
 		Delete(&token{}).Error
 }
