@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -26,18 +26,18 @@ const (
 	App Kind = "app"
 )
 
-// Session is one user's device: the Jellyfin token the bridge holds for it,
-// and the bridge tokens it handed out for it.
+// Session is one user's device: the Jellyfin token jellyfin-sso holds for it,
+// and jellyfin-sso tokens it handed out for it.
 type Session struct {
 	ID   string `gorm:"primaryKey"`
 	Kind Kind   `gorm:"not null"`
 	// UserID and Username are the Jellyfin user's.
 	UserID   string `gorm:"not null"`
 	Username string `gorm:"not null"`
-	// Device is as the bridge logged it in to Jellyfin.
+	// Device is as jellyfin-sso logged it in to Jellyfin.
 	Device jellyfin.Device `gorm:"embedded;embeddedPrefix:device_"`
 	// JellyfinToken is the device's Jellyfin access token, which never
-	// leaves the bridge.
+	// leaves jellyfin-sso.
 	JellyfinToken string    `gorm:"not null"`
 	Created       time.Time `gorm:"not null"`
 	// LastUsed is when a request last carried one of its tokens, to within
@@ -45,8 +45,8 @@ type Session struct {
 	LastUsed time.Time `gorm:"not null"`
 }
 
-// token is a bridge token, kept as its SHA-256 hash so the database doesn't
-// hold bridge tokens.
+// token is a jellyfin-sso token, kept as its SHA-256 hash so the database doesn't
+// hold jellyfin-sso tokens.
 type token struct {
 	Hash      []byte   `gorm:"primaryKey"`
 	SessionID string   `gorm:"not null;index"`
@@ -125,7 +125,7 @@ func (s *Store) CreateSession(ctx context.Context, session Session) (Session, er
 	return session, nil
 }
 
-// IssueToken returns a new bridge token for the session id, lasting ttl, or
+// IssueToken returns a new jellyfin-sso token for the session id, lasting ttl, or
 // until its session ends if ttl is 0. Like Jellyfin's own, it is 32 hex
 // digits.
 func (s *Store) IssueToken(ctx context.Context, id string, ttl time.Duration) (string, error) {
@@ -142,7 +142,7 @@ func (s *Store) IssueToken(ctx context.Context, id string, ttl time.Duration) (s
 }
 
 // errNoSession is a token that names no live session.
-var errNoSession = errors.New("jellybridge: no session")
+var errNoSession = errors.New("jellyfinsso: no session")
 
 // live limits a query of sessions to those used within idle.
 func (s *Store) live(db *gorm.DB) *gorm.DB {
@@ -242,8 +242,8 @@ const keepExpired = 24 * time.Hour
 
 // RefusedToken returns the session of a token Lookup refused, with the
 // token's expiry, nil if it has none: a token expired within keepExpired,
-// or of a session unused for idle. It returns errNoSession for a token the
-// bridge doesn't know.
+// or of a session unused for idle. It returns errNoSession for a token
+// jellyfin-sso doesn't know.
 func (s *Store) RefusedToken(ctx context.Context, tok string) (Session, *time.Time, error) {
 	var t token
 	err := s.db.WithContext(ctx).Preload("Session").Where("hash = ?", hashToken(tok)).Take(&t).Error

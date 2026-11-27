@@ -69,11 +69,11 @@ func TestEnsureAPIKey(t *testing.T) {
 		name, token string
 		want        string
 	}{
-		{"bridge", "bbbb", "sonarr=aaaa bridge=bbbb"},
+		{"jellyfin-sso", "bbbb", "sonarr=aaaa jellyfin-sso=bbbb"},
 		// Again: nothing changes.
-		{"bridge", "bbbb", "sonarr=aaaa bridge=bbbb"},
+		{"jellyfin-sso", "bbbb", "sonarr=aaaa jellyfin-sso=bbbb"},
 		// Another token replaces the key's.
-		{"bridge", "cccc", "sonarr=aaaa bridge=cccc"},
+		{"jellyfin-sso", "cccc", "sonarr=aaaa jellyfin-sso=cccc"},
 	} {
 		if err := EnsureAPIKey(ctx, path, step.name, step.token); err != nil {
 			t.Fatalf("EnsureAPIKey(%q, %q): %v", step.name, step.token, err)
@@ -83,8 +83,21 @@ func TestEnsureAPIKey(t *testing.T) {
 		}
 	}
 
+	// A key under a former name goes, whether the key changes or not.
+	for _, token := range []string{"cccc", "dddd"} {
+		if _, err := db.Exec(`INSERT INTO ApiKeys (DateCreated, DateLastActivity, Name, AccessToken) VALUES ('2026-01-01 00:00:00', '2026-01-01 00:00:00', 'old', 'eeee')`); err != nil {
+			t.Fatal(err)
+		}
+		if err := EnsureAPIKey(ctx, path, "jellyfin-sso", token, "old", "jellyfin-sso"); err != nil {
+			t.Fatalf("EnsureAPIKey with a former name: %v", err)
+		}
+		if got, want := strings.Join(apiKeys(t, db), " "), "sonarr=aaaa jellyfin-sso="+token; got != want {
+			t.Errorf("after EnsureAPIKey with a former name: keys %q, want %q", got, want)
+		}
+	}
+
 	var created string
-	if err := db.QueryRow(`SELECT DateCreated FROM ApiKeys WHERE Name = 'bridge'`).Scan(&created); err != nil {
+	if err := db.QueryRow(`SELECT DateCreated FROM ApiKeys WHERE Name = 'jellyfin-sso'`).Scan(&created); err != nil {
 		t.Fatal(err)
 	}
 	if len(created) < len("2006-01-02 15:04:05") || created[10] != ' ' {
@@ -102,7 +115,7 @@ func TestEnsureAPIKeyRefuses(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path, _ := database(t, tc.schema)
-			err := EnsureAPIKey(ctx, path, "bridge", "bbbb")
+			err := EnsureAPIKey(ctx, path, "jellyfin-sso", "bbbb")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("EnsureAPIKey: %v, want an error containing %q", err, tc.want)
 			}
@@ -111,7 +124,7 @@ func TestEnsureAPIKeyRefuses(t *testing.T) {
 
 	t.Run("no database", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "jellyfin.db")
-		if err := EnsureAPIKey(ctx, path, "bridge", "bbbb"); err == nil {
+		if err := EnsureAPIKey(ctx, path, "jellyfin-sso", "bbbb"); err == nil {
 			t.Error("EnsureAPIKey created a database")
 		}
 	})

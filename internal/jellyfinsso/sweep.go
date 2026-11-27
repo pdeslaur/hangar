@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -35,7 +35,7 @@ func Sweep(ctx context.Context, sessions *Store, client *jellyfin.Client) error 
 }
 
 // EndSession logs session's Jellyfin token out and deletes the session, with
-// its bridge tokens. If Jellyfin can't log it out, the session stays. It
+// its jellyfin-sso tokens. If Jellyfin can't log it out, the session stays. It
 // returns errNoSession if another request ended the session first.
 func EndSession(ctx context.Context, sessions *Store, client *jellyfin.Client, session Session) error {
 	if err := client.Logout(ctx, session.JellyfinToken); err != nil {

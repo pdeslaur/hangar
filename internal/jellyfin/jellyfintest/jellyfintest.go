@@ -17,7 +17,7 @@ import (
 	"github.com/pdeslaur/hangar/internal/jellyfin"
 )
 
-// Key is the API key Start writes into Jellyfin's database, named "bridge".
+// Key is the API key Start writes into Jellyfin's database, named "jellyfin-sso".
 const Key = "0123456789abcdef0123456789abcdef"
 
 // Server is a Jellyfin container.
@@ -78,7 +78,7 @@ func Start(t *testing.T) *Server {
 	// Jellyfin takes a key written while it runs, but SQLite's WAL locks
 	// don't cross the file sharing of Docker on macOS: write it stopped.
 	s.docker("stop")
-	if err := jellyfin.EnsureAPIKey(context.Background(), filepath.Join(dir, "data", "data", "jellyfin.db"), "bridge", Key); err != nil {
+	if err := jellyfin.EnsureAPIKey(context.Background(), filepath.Join(dir, "data", "data", "jellyfin.db"), "jellyfin-sso", Key); err != nil {
 		t.Fatalf("EnsureAPIKey: %v", err)
 	}
 	s.docker("start")

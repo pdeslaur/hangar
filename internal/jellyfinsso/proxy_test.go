@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"compress/gzip"
@@ -64,17 +64,17 @@ func TestProxy(t *testing.T) {
 		headers map[string]string
 		want    received
 	}{{
-		name:    "a bridge token in authorization",
+		name:    "a jellyfin-sso token in authorization",
 		url:     "/Users/Me",
 		headers: map[string]string{"Authorization": web.Header(token)},
 		// The session's device ID, the client's name and version.
 		want: received{Authorization: jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox Nightly", ID: "dev1", Version: "10.11.1"}.Header("real")},
 	}, {
-		name: "a bridge token in the query",
+		name: "a jellyfin-sso token in the query",
 		url:  "/Videos/1/stream?static=true&ApiKey=" + token,
 		want: received{Authorization: session.Device.Header("real"), Query: "static=true"},
 	}, {
-		name:    "a bridge token in a legacy header",
+		name:    "a jellyfin-sso token in a legacy header",
 		url:     "/Users/Me",
 		headers: map[string]string{"X-Emby-Token": token},
 		want:    received{Authorization: session.Device.Header("real")},
@@ -84,12 +84,12 @@ func TestProxy(t *testing.T) {
 		headers: map[string]string{"Authorization": web.Header("real"), "X-Emby-Token": "real"},
 		want:    received{Authorization: web.Header("")},
 	}, {
-		name:    "an expired bridge token",
+		name:    "an expired jellyfin-sso token",
 		url:     "/Users/Me",
 		headers: map[string]string{"Authorization": web.Header(expired)},
 		want:    received{Authorization: web.Header("")},
 	}, {
-		name: "a bridge token twice",
+		name: "a jellyfin-sso token twice",
 		url:  "/Users/Me?ApiKey=" + token + "&ApiKey=" + token,
 		want: received{},
 	}, {
@@ -161,7 +161,7 @@ func TestProxyAddsScript(t *testing.T) {
 	}{
 		{"page", "/web/", withScript, true, "", ""},
 		{"index", "/web/index.html", withScript, true, "", ""},
-		// A copy from before the bridge: the whole page again, with the
+		// A copy from before jellyfin-sso: the whole page again, with the
 		// script.
 		{"cached page", "/web/", withScript, true, "", `"abc"`},
 		{"headless", "/web/index.html?headless", headless, false, "", ""},

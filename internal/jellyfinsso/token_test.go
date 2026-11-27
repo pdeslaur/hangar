@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"maps"

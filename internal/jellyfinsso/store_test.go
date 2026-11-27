@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -83,7 +83,7 @@ func TestStoreTokens(t *testing.T) {
 		t.Errorf("Lookup of the refreshed token: %+v, %v", got, err)
 	}
 
-	// A refused token's session, while the bridge keeps it.
+	// A refused token's session, while jellyfin-sso keeps it.
 	got, expires, err := s.RefusedToken(ctx, short)
 	if err != nil || got.ID != session.ID || expires == nil || !expires.Equal(c.t.Add(-time.Hour)) {
 		t.Errorf("RefusedToken of the expired token: %+v, %v, %v", got, expires, err)

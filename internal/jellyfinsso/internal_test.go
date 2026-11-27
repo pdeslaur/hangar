@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"io"
@@ -53,7 +53,7 @@ func TestInternalQuickConnect(t *testing.T) {
 		{"not JSON", `code=123456`, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, "/bridge/quickconnect", strings.NewReader(tc.body))
+			r := httptest.NewRequest(http.MethodPost, "/internal/quickconnect", strings.NewReader(tc.body))
 			// The user header counts for nothing here.
 			r.Header.Set(userHeader, "phil")
 			w := httptest.NewRecorder()
@@ -67,7 +67,7 @@ func TestInternalQuickConnect(t *testing.T) {
 		t.Errorf("approved for %v, want [u1]", approved)
 	}
 
-	for _, path := range []string{"/sso/", "/sso/login", "/bridge/other"} {
+	for _, path := range []string{"/sso/", "/sso/login", "/internal/other"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {

@@ -1,4 +1,4 @@
-// Command jellyfin-bridge puts Jellyfin behind single sign-on. It runs in
+// Command jellyfin-sso puts Jellyfin behind single sign-on. It runs in
 // Jellyfin's pod, between the reverse proxy doing the sign-on and Jellyfin:
 // it signs browsers in as the user the sign-on names, hands clients tokens
 // of its own, and forwards their requests to Jellyfin with the Jellyfin
@@ -6,7 +6,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -21,8 +20,8 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/pdeslaur/hangar/internal/jellybridge"
 	"github.com/pdeslaur/hangar/internal/jellyfin"
+	"github.com/pdeslaur/hangar/internal/jellyfinsso"
 	"github.com/pdeslaur/hangar/internal/systemd"
 	"github.com/sethvargo/go-envconfig/v2"
 )
@@ -32,7 +31,7 @@ type config struct {
 	Addr string `env:"ADDR,default=127.0.0.1:8097"`
 	// InternalAddr, if set, is where the services trusted to sign their
 	// users in reach it, like through an mTLS tunnel, and only they: Jellyfin
-	// through the bridge, as on Addr, and /bridge/, without /sso/.
+	// through jellyfin-sso, as on Addr, and /internal/, without /sso/.
 	InternalAddr string `env:"INTERNAL_ADDR"`
 	// JellyfinURL is Jellyfin's, which nothing else should reach.
 	JellyfinURL string `env:"JELLYFIN_URL,default=http://127.0.0.1:8096"`
@@ -40,13 +39,13 @@ type config struct {
 	// random one each time it starts.
 	JellyfinDB string `env:"JELLYFIN_DB,required"`
 	// APIKeyName is its API key's name in Jellyfin.
-	APIKeyName string `env:"API_KEY_NAME,default=jellyfin-bridge"`
-	// State is its own database, of sessions: jellyfin-bridge.db beside
+	APIKeyName string `env:"API_KEY_NAME,default=jellyfin-sso"`
+	// State is its own database, of sessions: jellyfin-sso.db beside
 	// JellyfinDB unless set, kept and backed up with Jellyfin's.
 	State string `env:"STATE"`
 	// UserHeader is the header the reverse proxy names the signed-in user
 	// in, on requests to /sso/.
-	UserHeader string `env:"USER_HEADER,default=X-Bridge-User"`
+	UserHeader string `env:"USER_HEADER,default=X-SSO-User"`
 	// Users maps a signed-in user to their Jellyfin username, like
 	// "phil:Phil,anna:Anna", and only they sign in. Without it, a signed-in
 	// user's name is their Jellyfin username.
@@ -95,7 +94,7 @@ func run(ctx context.Context, cfg *config) error {
 		return err
 	}
 	// A key of its own, replacing the one it wrote before: it never leaves
-	// the bridge, and sessions don't depend on it.
+	// jellyfin-sso, and sessions don't depend on it.
 	key := make([]byte, 16)
 	rand.Read(key)
 	client := &jellyfin.Client{
@@ -106,7 +105,8 @@ func run(ctx context.Context, cfg *config) error {
 	if err := waitForJellyfin(ctx, client); err != nil {
 		return err
 	}
-	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key); err != nil {
+	// The key under jellyfin-sso's former name, jellyfin-bridge, goes.
+	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key, formerName); err != nil {
 		return err
 	}
 	serverID, err := client.ServerID(ctx)
@@ -120,15 +120,21 @@ func run(ctx context.Context, cfg *config) error {
 		}
 	}
 
-	state := cmp.Or(cfg.State, filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-bridge.db"))
-	sessions, err := jellybridge.Open(ctx, state, cfg.Idle)
+	state := cfg.State
+	if state == "" {
+		state = filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-sso.db")
+		if err := moveFormerState(ctx, filepath.Join(filepath.Dir(cfg.JellyfinDB), formerName+".db"), state); err != nil {
+			return err
+		}
+	}
+	sessions, err := jellyfinsso.Open(ctx, state, cfg.Idle)
 	if err != nil {
 		return err
 	}
 	defer sessions.Close()
 	go func() {
 		for {
-			if err := jellybridge.Sweep(ctx, sessions, client); err != nil {
+			if err := jellyfinsso.Sweep(ctx, sessions, client); err != nil {
 				clog.WarnContext(ctx, "ending idle sessions", "error", err)
 			}
 			select {
@@ -140,8 +146,8 @@ func run(ctx context.Context, cfg *config) error {
 	}()
 
 	mux := http.NewServeMux()
-	apps := jellybridge.NewApps(sessions, client)
-	sso := &jellybridge.SSO{
+	apps := jellyfinsso.NewApps(sessions, client)
+	sso := &jellyfinsso.SSO{
 		Apps:          apps,
 		ServerID:      serverID,
 		UserHeader:    cfg.UserHeader,
@@ -149,14 +155,14 @@ func run(ctx context.Context, cfg *config) error {
 		BrowserTTL:    cfg.BrowserTTL,
 		RefreshBefore: cfg.RefreshBefore,
 	}
-	proxy := jellybridge.NewProxy(target, apps)
+	proxy := jellyfinsso.NewProxy(target, apps)
 	mux.Handle("/sso/", sso)
 	mux.Handle("/sso-static/", sso)
 	mux.Handle("/", proxy)
 	handlers := map[string]http.Handler{cfg.Addr: mux}
 	if cfg.InternalAddr != "" {
 		internal := http.NewServeMux()
-		internal.Handle("/bridge/", sso.Internal())
+		internal.Handle("/internal/", sso.Internal())
 		internal.Handle("/", proxy)
 		handlers[cfg.InternalAddr] = internal
 	}

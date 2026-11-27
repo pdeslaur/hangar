@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -39,7 +39,7 @@ func TestProxyJellyfin(t *testing.T) {
 	store, _ := openStore(t)
 	store.now = time.Now
 
-	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "bridge-test-1", Version: "10.11.0"}
+	device := jellyfin.Device{Client: "Jellyfin Web", Name: "Firefox", ID: "sso-test-1", Version: "10.11.0"}
 	login, err := c.Login(ctx, s.Users["alice"], device)
 	if err != nil {
 		t.Fatal(err)
@@ -60,19 +60,19 @@ func TestProxyJellyfin(t *testing.T) {
 	defer proxy.Close()
 
 	if status, name := jellyfintest.Me(t, proxy.URL, token); status != http.StatusOK || name != "alice" {
-		t.Errorf("/Users/Me with the bridge token: %d %q", status, name)
+		t.Errorf("/Users/Me with jellyfin-sso token: %d %q", status, name)
 	}
 	if status, _ := jellyfintest.Me(t, proxy.URL, jellyfinToken); status != http.StatusUnauthorized {
 		t.Errorf("/Users/Me through the proxy with the Jellyfin token: %d", status)
 	}
 	if status, _ := jellyfintest.Me(t, s.URL, token); status != http.StatusUnauthorized {
-		t.Errorf("/Users/Me at Jellyfin with the bridge token: %d", status)
+		t.Errorf("/Users/Me at Jellyfin with jellyfin-sso token: %d", status)
 	}
 
 	// The WebSocket gets its token in the URL; Jellyfin refuses it without.
 	socket := proxy.URL + "/socket?deviceId=" + device.ID
 	if status := upgrade(t, socket+"&api_key="+token); status != http.StatusSwitchingProtocols {
-		t.Errorf("WebSocket with the bridge token: %d", status)
+		t.Errorf("WebSocket with jellyfin-sso token: %d", status)
 	}
 	if status := upgrade(t, socket+"&api_key="+jellyfinToken); status == http.StatusSwitchingProtocols {
 		t.Error("WebSocket with the Jellyfin token through the proxy: switched protocols")

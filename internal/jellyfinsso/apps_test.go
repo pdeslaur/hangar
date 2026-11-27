@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"bytes"
@@ -98,7 +98,7 @@ func TestProxyRefuses(t *testing.T) {
 			t.Errorf("POST %s: %d", path, w.Code)
 		}
 	}
-	// Jellyfin's password login is the bridge's, whatever the password.
+	// Jellyfin's password login is jellyfin-sso's, whatever the password.
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/users/authenticatebyname", strings.NewReader(`{"Username": "alice", "Pw": "alice-password"}`))
 	r.Header.Set("Authorization", jellyfin.Device{Client: "Infuse", Name: "Apple TV", ID: "tv1", Version: "8"}.Header(""))
@@ -159,7 +159,7 @@ var issuedCodeHTML = regexp.MustCompile(`Username: (\w+)</div>\s*<div class="cod
 var sessionRowHTML = regexp.MustCompile(`<td>([^<(]+?)(?: \(browser\))?</td>\s*<td>[^<]*</td>\s*<td>\s*<form method="post" action="/sso/revoke"[^>]*>\s*<input type="hidden" name="id" value="([^"]+)"`)
 
 // TestAppsJellyfin signs apps in through the proxy against a real Jellyfin:
-// with Quick Connect approved on the bridge's page and on jellyfin-web's,
+// with Quick Connect approved on jellyfin-sso's page and on jellyfin-web's,
 // and with a one-time code, and revokes one.
 func TestAppsJellyfin(t *testing.T) {
 	s := jellyfintest.Start(t)
@@ -179,7 +179,7 @@ func TestAppsJellyfin(t *testing.T) {
 	proxy := httptest.NewServer(NewProxy(target, apps))
 	defer proxy.Close()
 
-	// signedIn checks a login's result: a bridge token for alice.
+	// signedIn checks a login's result: a jellyfin-sso token for alice.
 	signedIn := func(what string, body []byte) string {
 		t.Helper()
 		var result struct {
@@ -197,12 +197,12 @@ func TestAppsJellyfin(t *testing.T) {
 			t.Fatalf("%s: the token's session: %+v, %v", what, session, err)
 		}
 		if status, name := jellyfintest.Me(t, proxy.URL, result.AccessToken); status != http.StatusOK || name != "alice" {
-			t.Errorf("%s: /Users/Me through the bridge: %d %q", what, status, name)
+			t.Errorf("%s: /Users/Me through jellyfin-sso: %d %q", what, status, name)
 		}
 		return result.AccessToken
 	}
 
-	// Quick Connect, approved on the bridge's page, or by approve.
+	// Quick Connect, approved on jellyfin-sso's page, or by approve.
 	tv := jellyfin.Device{Client: "Jellyfin Android TV", Name: "Living room", ID: "tv-1", Version: "0.18"}
 	onPage := func(code string) {
 		t.Helper()
@@ -301,7 +301,7 @@ func TestAppsJellyfin(t *testing.T) {
 		t.Errorf("POST /sso/revoke again: %d", w.Code)
 	}
 
-	// Signing out through the bridge ends the bridge session, not just
+	// Signing out through jellyfin-sso ends jellyfin-sso session, not just
 	// Jellyfin's token; an app's, without the cookie a browser's gets.
 	logout := func(what string, device jellyfin.Device, token string) *http.Response {
 		t.Helper()
@@ -336,7 +336,7 @@ func TestAppsJellyfin(t *testing.T) {
 	}
 
 	// A device deleted in Jellyfin: the next request finds its token dead,
-	// and the bridge drops its session.
+	// and jellyfin-sso drops its session.
 	third := quickConnect()
 	if err := call2xx(t, http.MethodDelete, s.URL+"/Devices?id="+tv.ID, jellyfintest.Key); err != "" {
 		t.Fatalf("deleting the TV in Jellyfin: %s", err)

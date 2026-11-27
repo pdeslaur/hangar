@@ -12,13 +12,13 @@ import (
 	"testing"
 )
 
-const userHeader = "X-Bridge-User"
+const userHeader = "X-SSO-User"
 
-// fakes is a fake Seerr and jellyfin-bridge, where a Quick Connect code is
+// fakes is a fake Seerr and jellyfin-sso, where a Quick Connect code is
 // approved for alice alone.
 type fakes struct {
 	mu sync.Mutex
-	// approved is whether jellyfin-bridge approved Seerr's code.
+	// approved is whether jellyfin-sso approved Seerr's code.
 	approved bool
 	// seerrUsers are the users Seerr knows.
 	seerrUsers map[string]bool
@@ -83,11 +83,11 @@ func (f *fakes) handler(t *testing.T) (*url.URL, string) {
 		}
 	}))
 	t.Cleanup(seerr.Close)
-	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	jsso := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		var body struct{ Code, User string }
-		if r.Method != http.MethodPost || r.URL.Path != "/bridge/quickconnect" || json.NewDecoder(r.Body).Decode(&body) != nil {
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/quickconnect" || json.NewDecoder(r.Body).Decode(&body) != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
@@ -102,14 +102,14 @@ func (f *fakes) handler(t *testing.T) (*url.URL, string) {
 		f.approved = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	t.Cleanup(bridge.Close)
+	t.Cleanup(jsso.Close)
 	u, _ := url.Parse(seerr.URL)
-	return u, bridge.URL
+	return u, jsso.URL
 }
 
 func newHandler(t *testing.T, f *fakes) *Handler {
-	seerr, bridge := f.handler(t)
-	return &Handler{Seerr: seerr, Bridge: bridge, UserHeader: userHeader, Client: http.DefaultClient}
+	seerr, jsso := f.handler(t)
+	return &Handler{Seerr: seerr, JellyfinSSO: jsso, UserHeader: userHeader, Client: http.DefaultClient}
 }
 
 // browse sends a request through h, from the reverse proxy, as user.
@@ -165,7 +165,7 @@ func TestLoginFails(t *testing.T) {
 		want       int
 	}{
 		{"no user", "", map[string]bool{"alice": true}, true, http.StatusForbidden},
-		{"a user jellyfin-bridge doesn't know", "mallory", map[string]bool{"alice": true}, true, http.StatusForbidden},
+		{"a user jellyfin-sso doesn't know", "mallory", map[string]bool{"alice": true}, true, http.StatusForbidden},
 		{"a user Seerr doesn't know", "phil", nil, true, http.StatusForbidden},
 		{"no session cookie", "phil", map[string]bool{"alice": true}, false, http.StatusBadGateway},
 	} {
@@ -184,7 +184,7 @@ func TestLoginFails(t *testing.T) {
 		t.Errorf("no session cookie, CSRF on: status %d, cookies %q", w.Code, w.Header().Values("Set-Cookie"))
 	}
 	// Seerr unreachable.
-	h = &Handler{Seerr: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, Bridge: "http://127.0.0.1:1", UserHeader: userHeader, Client: http.DefaultClient}
+	h = &Handler{Seerr: &url.URL{Scheme: "http", Host: "127.0.0.1:1"}, JellyfinSSO: "http://127.0.0.1:1", UserHeader: userHeader, Client: http.DefaultClient}
 	if w := browse(h, http.MethodGet, "/sso/login", "phil"); w.Code != http.StatusBadGateway {
 		t.Errorf("Seerr down: status %d", w.Code)
 	}

@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"github.com/pdeslaur/hangar/internal/jellyfin/jellyfintest"
 )
 
-const userHeader = "X-Bridge-User"
+const userHeader = "X-SSO-User"
 
 // browse sends a request from a browser signed in to the single sign-on as
 // user, with the cookies and headers given, returning the response.
@@ -111,7 +111,7 @@ func TestSSOPages(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ name, has string }{
-		{"bridge.js", "jellyfin_credentials"},
+		{"sso.js", "jellyfin_credentials"},
 		{"style.css", "--accent"},
 		{"unpoly.min.js", "Unpoly 3.15.0"},
 		{"unpoly.min.css", "up-"},
@@ -125,15 +125,15 @@ func TestSSOPages(t *testing.T) {
 			t.Errorf("GET /sso-static/%s, current: %d", tc.name, w.Code)
 		}
 	}
-	for _, path := range []string{"/sso-static/", "/sso-static/missing.js", "/sso-static/../sso/", "/sso-static/account.html", "/sso/bridge.js", "/sso/style.css"} {
+	for _, path := range []string{"/sso-static/", "/sso-static/missing.js", "/sso-static/../sso/", "/sso-static/account.html", "/sso/sso.js", "/sso/style.css"} {
 		if w := browse(t, l, http.MethodGet, path, "phil", nil, nil); w.Code == http.StatusOK {
 			t.Errorf("GET %s: %d", path, w.Code)
 		}
 	}
 }
 
-// storedSession is the session login.html hands bridge.js.
-var storedSession = regexp.MustCompile(`jellyfinBridge\.store\((\{.*?\})\);`)
+// storedSession is the session login.html hands sso.js.
+var storedSession = regexp.MustCompile(`jellyfinSSO\.store\((\{.*?\})\);`)
 
 // TestLoginJellyfin signs browsers in against a real Jellyfin, refreshes
 // their tokens, and uses them through the proxy.
@@ -156,7 +156,7 @@ func TestLoginJellyfin(t *testing.T) {
 	proxy := httptest.NewServer(NewProxy(target, apps))
 	defer proxy.Close()
 
-	// check checks a session from the bridge, and returns the device cookie
+	// check checks a session from jellyfin-sso, and returns the device cookie
 	// it came with.
 	check := func(what string, w *httptest.ResponseRecorder, session sessionResponse) *http.Cookie {
 		t.Helper()
@@ -226,6 +226,24 @@ func TestLoginJellyfin(t *testing.T) {
 	}
 	if session, err := store.Lookup(ctx, other.AccessToken); err != nil || session.Device.ID != other.DeviceID {
 		t.Errorf("the second browser's session: %+v, %v", session, err)
+	}
+
+	// A browser holding the device cookie under jellyfin-sso's former name
+	// keeps its session, its cookie moved.
+	former := &http.Cookie{Name: formerDeviceCookie, Value: first.DeviceID}
+	w = browse(t, l, http.MethodGet, "/sso/login", "phil", []*http.Cookie{former}, nil)
+	if m := storedSession.FindStringSubmatch(w.Body.String()); m == nil || !strings.Contains(m[1], `"DeviceId":"`+first.DeviceID+`"`) {
+		t.Errorf("GET /sso/login with the former device cookie: %d %s", w.Code, w.Body)
+	}
+	cleared := false
+	for _, c := range w.Result().Cookies() {
+		cleared = cleared || c.Name == formerDeviceCookie && c.MaxAge < 0
+	}
+	if !cleared {
+		t.Errorf("GET /sso/login with the former device cookie: cookies %v, want it cleared", w.Result().Cookies())
+	}
+	if err := store.db.Raw(`SELECT count(*) FROM sessions`).Row().Scan(&sessions); err != nil || sessions != 2 {
+		t.Errorf("sessions after signing in with the former cookie: %d, %v", sessions, err)
 	}
 
 	// A device cookie too long for a device ID: a device of its own.

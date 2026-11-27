@@ -1,23 +1,36 @@
-// Signs jellyfin-web in through jellyfin-bridge, and keeps it signed in.
+// Signs jellyfin-web in through jellyfin-sso, and keeps it signed in.
 //
-// The bridge's login page calls jellyfinBridge.store() with the session it
-// made. In jellyfin-web, where the bridge adds this script, it refreshes
-// the token when the bridge's RefreshBefore is all it has left, and sends
-// jellyfin-web's own login and server pages to the bridge's: signing in is
-// the bridge's. It keeps jellyfin-web on the token the bridge last gave,
+// jellyfin-sso's login page calls jellyfinSSO.store() with the session it
+// made. In jellyfin-web, where jellyfin-sso adds this script, it refreshes
+// the token when jellyfin-sso's RefreshBefore is all it has left, and sends
+// jellyfin-web's own login and server pages to jellyfin-sso's: signing in is
+// jellyfin-sso's. It keeps jellyfin-web on the token jellyfin-sso last gave,
 // which a page open since before a refresh would put back an older one of.
-// Once jellyfin-web signs out, which the bridge marks with a cookie, it
+// Once jellyfin-web signs out, which jellyfin-sso marks with a cookie, it
 // signs out of the single sign-on too.
 (() => {
 	const credentialsKey = "jellyfin_credentials";
-	const sessionKey = "jellyfin-bridge-session";
-	const expiresKey = "jellyfin-bridge-expires";
-	const refreshBeforeKey = "jellyfin-bridge-refresh-before";
-	const signedOutCookie = "jellyfin-bridge-signed-out";
+	const sessionKey = "jellyfin-sso-session";
+	const expiresKey = "jellyfin-sso-expires";
+	const refreshBeforeKey = "jellyfin-sso-refresh-before";
+	const signedOutCookie = "jellyfin-sso-signed-out";
 	const loginPage = "/sso/login";
 	const logoutPage = "/sso/logout";
 
-	// store stores a session from the bridge, {AccessToken, UserId,
+	// Under jellyfin-sso's former name, jellyfin-bridge, its keys began
+	// jellyfin-bridge-: move them, keeping the browser signed in.
+	for (const key of [sessionKey, expiresKey, refreshBeforeKey]) {
+		const former = key.replace(/^jellyfin-sso-/, "jellyfin-bridge-");
+		const value = localStorage.getItem(former);
+		if (value !== null) {
+			if (localStorage.getItem(key) === null) {
+				localStorage.setItem(key, value);
+			}
+			localStorage.removeItem(former);
+		}
+	}
+
+	// store stores a session from jellyfin-sso, {AccessToken, UserId,
 	// ServerId, DeviceId, ExpiresIn, RefreshBefore}, where jellyfin-web
 	// reads its credentials, with the browser's device ID.
 	function store(session) {
@@ -45,7 +58,7 @@
 		syncClient();
 	}
 
-	// current returns the session the bridge last gave this browser,
+	// current returns the session jellyfin-sso last gave this browser,
 	// {AccessToken, UserId, ServerId}, or null.
 	function current() {
 		try {
@@ -56,8 +69,8 @@
 		}
 	}
 
-	// heal returns jellyfin-web's credentials, as JSON, with the bridge's
-	// server holding the token the bridge last gave, in place of another
+	// heal returns jellyfin-web's credentials, as JSON, with jellyfin-sso's
+	// server holding the token jellyfin-sso last gave, in place of another
 	// one. jellyfin-web keeps its credentials in memory, and writes them all
 	// back now and then: a page open since before a refresh, here or in
 	// another tab, would put back a token that has expired. A signed-out
@@ -82,8 +95,8 @@
 		return JSON.stringify(credentials);
 	}
 
-	// syncClient has the running jellyfin-web, if any, send the token the
-	// bridge last gave, unless it signed out.
+	// syncClient has the running jellyfin-web, if any, send the token
+	// jellyfin-sso last gave, unless it signed out.
 	function syncClient() {
 		const session = current();
 		const client = window.ApiClient;
@@ -96,7 +109,7 @@
 		}
 	}
 
-	// refresh asks the bridge for a new token for this browser's session.
+	// refresh asks jellyfin-sso for a new token for this browser's session.
 	async function refresh() {
 		const resp = await fetch("/sso/session", { method: "POST" });
 		if (!resp.ok) {
@@ -105,14 +118,14 @@
 		store(await resp.json());
 	}
 
-	window.jellyfinBridge = { store };
+	window.jellyfinSSO = { store };
 
 	if (location.pathname === loginPage) {
 		return;
 	}
 
-	// signInPage is where jellyfin-web's login page sends the browser: the
-	// bridge's, or, once jellyfin-web signed out, the single sign-on's
+	// signInPage is where jellyfin-web's login page sends the browser: jellyfin-sso's
+	// page, or, once jellyfin-web signed out, the single sign-on's
 	// logout.
 	function signInPage() {
 		if (!document.cookie.split("; ").includes(signedOutCookie + "=1")) {
@@ -130,12 +143,12 @@
 		return;
 	}
 
-	// Keep jellyfin-web's credentials on the bridge's last token: as they
+	// Keep jellyfin-web's credentials on jellyfin-sso's last token: as they
 	// are, before jellyfin-web reads them, and as it writes them.
 	const stored = localStorage.getItem(credentialsKey);
 	const healed = heal(stored);
 	if (healed !== stored) {
-		console.warn("jellyfin-bridge: replaced a stale token in jellyfin-web's credentials");
+		console.warn("jellyfin-sso: replaced a stale token in jellyfin-web's credentials");
 		localStorage.setItem(credentialsKey, healed);
 	}
 	const setItem = Storage.prototype.setItem;
@@ -152,7 +165,7 @@
 		}
 	});
 
-	// addMenuItems adds "My devices", the bridge's account page, after the
+	// addMenuItems adds "My devices", jellyfin-sso's account page, after the
 	// Quick Connect item of jellyfin-web's user menu, which has no setting
 	// for it: the avatar's menu in the new layout, the user's page in the
 	// classic one. The item is a copy of Quick Connect's, styled alike,
@@ -161,14 +174,14 @@
 	// link from config.json stays.
 	// The new layout hides the classic one's, by its class, which the copy
 	// keeps.
-	const quickConnectItems = '#app-user-menu a[href$="/quickconnect"], a.lnkQuickConnectPreferences:not([data-jellyfin-bridge])';
+	const quickConnectItems = '#app-user-menu a[href$="/quickconnect"], a.lnkQuickConnectPreferences:not([data-jellyfin-sso])';
 	function addMenuItems() {
 		for (const quickConnect of document.querySelectorAll(quickConnectItems)) {
-			if (quickConnect.nextElementSibling?.dataset.jellyfinBridge) {
+			if (quickConnect.nextElementSibling?.dataset.jellyfinSSO) {
 				continue;
 			}
 			const item = quickConnect.cloneNode(true);
-			item.dataset.jellyfinBridge = "devices";
+			item.dataset.jellyfinSSO = "devices";
 			item.setAttribute("href", "/sso/");
 			item.classList.remove("Mui-focusVisible", "Mui-selected");
 			// The label: the first text that isn't an icon's.
@@ -234,7 +247,7 @@
 		} catch (e) {
 			// The sign-on's session is gone, most likely: once the token is
 			// too, sign in again through it.
-			console.warn("jellyfin-bridge: refreshing the token failed", e);
+			console.warn("jellyfin-sso: refreshing the token failed", e);
 			if (left < 60 * 1000) {
 				location.replace(loginPage);
 			}

@@ -1,4 +1,4 @@
-package jellybridge
+package jellyfinsso
 
 import (
 	"context"
@@ -29,13 +29,13 @@ const (
 	usedCodeMemory = 90 * 24 * time.Hour
 )
 
-// Apps signs native apps in, with bridge tokens lasting until revoked:
+// Apps signs native apps in, with jellyfin-sso tokens lasting until revoked:
 //
 //   - An app with Quick Connect signs in with Jellyfin's own, approved on
-//     the bridge's page or in jellyfin-web; Adopt turns the result Jellyfin
-//     answers into a bridge session.
+//     jellyfin-sso's page or in jellyfin-web; Adopt turns the result Jellyfin
+//     answers into a jellyfin-sso session.
 //   - An app without, like Infuse, signs in with a username and password:
-//     ServePasswordLogin takes a one-time code from the bridge's page as the
+//     ServePasswordLogin takes a one-time code from jellyfin-sso's page as the
 //     password, in place of Jellyfin's passwords, which never reach it.
 type Apps struct {
 	Sessions *Store
@@ -172,12 +172,12 @@ func (a *Apps) ServePasswordLogin(w http.ResponseWriter, r *http.Request, device
 }
 
 // Adopt makes an app session holding the Jellyfin token of result, a login
-// Jellyfin answered, and returns the result with a bridge token in its
+// Jellyfin answered, and returns the result with a jellyfin-sso token in its
 // place. Jellyfin ended the tokens of the same user's earlier login on the
 // same device, so their sessions go too.
 func (a *Apps) Adopt(ctx context.Context, result *jellyfin.AuthenticationResult) ([]byte, error) {
 	if result.Device.ID == "" {
-		return nil, errors.New("jellybridge: a login without its device")
+		return nil, errors.New("jellyfinsso: a login without its device")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(result.Raw, &fields); err != nil {
