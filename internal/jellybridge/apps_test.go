@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -136,21 +137,30 @@ func call(t *testing.T, method, url, authorization string, body any) (int, []byt
 	return resp.StatusCode, out
 }
 
-// sso sends a request to the SSO's path as phil, returning the recorder.
-func sso(t *testing.T, s *SSO, method, path string, body any) *httptest.ResponseRecorder {
+// sso sends a request to the SSO's path as phil, posting form, if any, as
+// a form of the same site does.
+func sso(t *testing.T, s *SSO, method, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
-	b, _ := json.Marshal(body)
-	r := httptest.NewRequest(method, path, bytes.NewReader(b))
-	r.Header.Set("Content-Type", "application/json")
+	r := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	r.Header.Set(userHeader, "phil")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)
 	return w
 }
 
+// issuedCodeHTML finds the username and the one-time code on the account
+// page.
+var issuedCodeHTML = regexp.MustCompile(`Username: (\w+)</div>\s*<div class="code">(\d+)</div>`)
+
+// sessionRowHTML finds the app and the ID of each session the account page
+// lists.
+var sessionRowHTML = regexp.MustCompile(`<td>([^<(]+?)(?: \(browser\))?</td>\s*<td>[^<]*</td>\s*<td>\s*<form method="post" action="/sso/revoke"[^>]*>\s*<input type="hidden" name="id" value="([^"]+)"`)
+
 // TestAppsJellyfin signs apps in through the proxy against a real Jellyfin:
-// one with Quick Connect approved on the bridge's page, one with a one-time
-// code, and revokes one.
+// with Quick Connect approved on the bridge's page and on jellyfin-web's,
+// and with a one-time code, and revokes one.
 func TestAppsJellyfin(t *testing.T) {
 	s := jellyfintest.Start(t)
 	ctx := context.Background()
@@ -192,9 +202,15 @@ func TestAppsJellyfin(t *testing.T) {
 		return result.AccessToken
 	}
 
-	// Quick Connect, approved on the bridge's page.
+	// Quick Connect, approved on the bridge's page, or by approve.
 	tv := jellyfin.Device{Client: "Jellyfin Android TV", Name: "Living room", ID: "tv-1", Version: "0.18"}
-	quickConnect := func() string {
+	onPage := func(code string) {
+		t.Helper()
+		if w := sso(t, pages, http.MethodPost, "/sso/quickconnect", url.Values{"code": {code}}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Signed in.") {
+			t.Fatalf("POST /sso/quickconnect: %d %s", w.Code, w.Body)
+		}
+	}
+	quickConnectWith := func(approve func(code string)) string {
 		t.Helper()
 		status, body := call(t, http.MethodPost, proxy.URL+"/QuickConnect/Initiate", tv.Header(""), nil)
 		if status != http.StatusOK {
@@ -202,19 +218,36 @@ func TestAppsJellyfin(t *testing.T) {
 		}
 		var request struct{ Code, Secret string }
 		json.Unmarshal(body, &request)
-		if w := sso(t, pages, http.MethodPost, "/sso/quickconnect", map[string]string{"Code": request.Code}); w.Code != http.StatusNoContent {
-			t.Fatalf("POST /sso/quickconnect: %d %s", w.Code, w.Body)
-		}
+		approve(request.Code)
 		status, body = call(t, http.MethodPost, proxy.URL+"/Users/AuthenticateWithQuickConnect", tv.Header(""), map[string]string{"Secret": request.Secret})
 		if status != http.StatusOK {
 			t.Fatalf("AuthenticateWithQuickConnect: %d %s", status, body)
 		}
 		return signedIn("Quick Connect", body)
 	}
+	quickConnect := func() string { return quickConnectWith(onPage) }
 	first := quickConnect()
-	if w := sso(t, pages, http.MethodPost, "/sso/quickconnect", map[string]string{"Code": "000000"}); w.Code != http.StatusNotFound {
-		t.Errorf("POST /sso/quickconnect with no such code: %d", w.Code)
+	if w := sso(t, pages, http.MethodPost, "/sso/quickconnect", url.Values{"code": {"000000"}}); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "no app is showing that code") {
+		t.Errorf("POST /sso/quickconnect with no such code: %d %s", w.Code, w.Body)
 	}
+
+	// Quick Connect approved on jellyfin-web's own page, through the proxy
+	// with a browser's token.
+	w := browse(t, pages, http.MethodGet, "/sso/login", "phil", nil, nil)
+	m := storedSession.FindStringSubmatch(w.Body.String())
+	if w.Code != http.StatusOK || m == nil {
+		t.Fatalf("GET /sso/login: %d %s", w.Code, w.Body)
+	}
+	var browser sessionResponse
+	json.Unmarshal([]byte(m[1]), &browser)
+	web := browserDevice
+	web.ID = browser.DeviceID
+	quickConnectWith(func(code string) {
+		t.Helper()
+		if err := call2xxAs(t, http.MethodPost, proxy.URL+"/QuickConnect/Authorize?code="+code, web.Header(browser.AccessToken)); err != "" {
+			t.Fatalf("approving the code in jellyfin-web: %s", err)
+		}
+	})
 	// Signing the same TV in again ends its first session.
 	second := quickConnect()
 	if status, _ := jellyfintest.Me(t, proxy.URL, first); status != http.StatusUnauthorized {
@@ -223,11 +256,12 @@ func TestAppsJellyfin(t *testing.T) {
 
 	// A one-time code, for an app without Quick Connect.
 	infuse := jellyfin.Device{Client: "Infuse", Name: "Apple TV", ID: "appletv-1", Version: "8.5.11"}
-	w := sso(t, pages, http.MethodPost, "/sso/code", nil)
-	var code struct{ Username, Code string }
-	if err := json.Unmarshal(w.Body.Bytes(), &code); err != nil || code.Username != "alice" {
+	w = sso(t, pages, http.MethodPost, "/sso/code", nil)
+	m = issuedCodeHTML.FindStringSubmatch(w.Body.String())
+	if w.Code != http.StatusOK || m == nil || m[1] != "alice" {
 		t.Fatalf("POST /sso/code: %d %s", w.Code, w.Body)
 	}
+	code := struct{ Username, Code string }{m[1], m[2]}
 	login := func(password string) (int, []byte) {
 		return call(t, http.MethodPost, proxy.URL+"/Users/AuthenticateByName", infuse.Header(""),
 			map[string]string{"Username": "Alice", "Pw": password})
@@ -245,35 +279,60 @@ func TestAppsJellyfin(t *testing.T) {
 	}
 
 	// The sessions, and revoking Infuse's.
-	w = sso(t, pages, http.MethodGet, "/sso/sessions", nil)
-	var sessions []sessionInfo
-	json.Unmarshal(w.Body.Bytes(), &sessions)
+	w = sso(t, pages, http.MethodGet, "/sso/", nil)
+	listed := sessionRowHTML.FindAllStringSubmatch(w.Body.String(), -1)
 	var infuseID string
-	for _, s := range sessions {
-		if s.Client == "Infuse" {
-			infuseID = s.ID
+	for _, row := range listed {
+		if row[1] == "Infuse" {
+			infuseID = row[2]
 		}
 	}
-	if len(sessions) != 2 || infuseID == "" {
-		t.Fatalf("GET /sso/sessions: %s", w.Body)
+	// The TV, the browser and Infuse.
+	if len(listed) != 3 || infuseID == "" {
+		t.Fatalf("GET /sso/: %v in %s", listed, w.Body)
 	}
-	if w := sso(t, pages, http.MethodPost, "/sso/revoke", map[string]string{"ID": infuseID}); w.Code != http.StatusNoContent {
+	if w := sso(t, pages, http.MethodPost, "/sso/revoke", url.Values{"id": {infuseID}}); w.Code != http.StatusOK || strings.Contains(w.Body.String(), infuseID) {
 		t.Fatalf("POST /sso/revoke: %d %s", w.Code, w.Body)
 	}
 	if status, _ := jellyfintest.Me(t, proxy.URL, infuseToken); status != http.StatusUnauthorized {
 		t.Errorf("/Users/Me with Infuse's token after revoking it: %d", status)
 	}
-	if w := sso(t, pages, http.MethodPost, "/sso/revoke", map[string]string{"ID": infuseID}); w.Code != http.StatusNotFound {
+	if w := sso(t, pages, http.MethodPost, "/sso/revoke", url.Values{"id": {infuseID}}); w.Code != http.StatusNotFound {
 		t.Errorf("POST /sso/revoke again: %d", w.Code)
 	}
 
 	// Signing out through the bridge ends the bridge session, not just
-	// Jellyfin's token.
-	if status, body := call(t, http.MethodPost, proxy.URL+"/Sessions/Logout", tv.Header(second), nil); status != http.StatusNoContent {
-		t.Fatalf("POST /Sessions/Logout: %d %s", status, body)
+	// Jellyfin's token; an app's, without the cookie a browser's gets.
+	logout := func(what string, device jellyfin.Device, token string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, proxy.URL+"/Sessions/Logout", nil)
+		req.Header.Set("Authorization", device.Header(token))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("%s: POST /Sessions/Logout: %d", what, resp.StatusCode)
+		}
+		if _, err := store.Lookup(ctx, token); err == nil {
+			t.Errorf("%s: the session outlived its logout", what)
+		}
+		return resp
 	}
-	if _, err := store.Lookup(ctx, second); err == nil {
-		t.Error("the TV's session outlived its logout")
+	signedOut := func(resp *http.Response) bool {
+		for _, c := range resp.Cookies() {
+			if c.Name == signedOutCookie && c.Value == "1" && c.Path == "/" && !c.HttpOnly {
+				return true
+			}
+		}
+		return false
+	}
+	if resp := logout("the TV", tv, second); signedOut(resp) {
+		t.Error("an app's logout set the signed-out cookie")
+	}
+	if resp := logout("the browser", web, browser.AccessToken); !signedOut(resp) {
+		t.Errorf("a browser's logout set cookies %v", resp.Cookies())
 	}
 
 	// A device deleted in Jellyfin: the next request finds its token dead,
@@ -294,7 +353,14 @@ func TestAppsJellyfin(t *testing.T) {
 // wrong, if it didn't answer 2xx.
 func call2xx(t *testing.T, method, url, token string) string {
 	t.Helper()
-	status, body := call(t, method, url, `MediaBrowser Token="`+token+`"`, nil)
+	return call2xxAs(t, method, url, `MediaBrowser Token="`+token+`"`)
+}
+
+// call2xxAs sends a request with the Authorization header authorization,
+// returning what went wrong, if it didn't answer 2xx.
+func call2xxAs(t *testing.T, method, url, authorization string) string {
+	t.Helper()
+	status, body := call(t, method, url, authorization, nil)
 	if status < 200 || status > 299 {
 		return fmt.Sprintf("%d %s", status, body)
 	}

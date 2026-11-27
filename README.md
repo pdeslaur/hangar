@@ -47,13 +47,6 @@ tls {
 
 ## Testing
 
-jellyfin-bridge embeds its pages, built with Node, so build them first (see
-[Pages](cmd/jellyfin-bridge/README.md#pages)):
-
-```sh
-go generate ./internal/jellybridge/web
-```
-
 mautrix needs the `goolm` build tag for its olm in Go, so set it for the whole
 module:
 
@@ -97,7 +90,6 @@ cosign verify ghcr.io/pdeslaur/<command>:latest \
     --certificate-identity https://github.com/pdeslaur/hangar/.github/workflows/build.yaml@refs/heads/main
 ```
 
-[Renovate](https://github.com/pdeslaur/renovate) checks for Go module, npm and
+[Renovate](https://github.com/pdeslaur/renovate) checks for Go module and
 GitHub Actions updates daily, and its pull requests merge themselves once the
-required checks pass. [`renovate.json`](renovate.json) groups the npm updates
-into one pull request, as its shared configuration does the others.
+required checks pass.

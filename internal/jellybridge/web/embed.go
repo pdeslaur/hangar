@@ -1,23 +1,28 @@
-// Package web is the bridge's pages under /sso/, written with Solid and
-// built with Vite into dist, which isn't committed: build them with
-// go generate before building the bridge.
+// Package web is the bridge's pages under /sso/, as html/template
+// templates, and the static files they use under /sso-static/, Unpoly's
+// among them: nothing here is built.
 package web
-
-//go:generate npm ci
-//go:generate npm run build
 
 import (
 	"embed"
+	"html/template"
 	"io/fs"
 )
 
-//go:embed all:dist
-var dist embed.FS
+//go:embed templates/*.html
+var templates embed.FS
 
-// FS is the built pages: account.html, login.html, bridge.js, and assets/,
-// whose names hold a hash of their content.
-var FS = func() fs.FS {
-	sub, err := fs.Sub(dist, "dist")
+//go:embed static
+var static embed.FS
+
+// Templates are the pages, account.html and login.html, each a whole
+// document.
+var Templates = template.Must(template.ParseFS(templates, "templates/*.html"))
+
+// Static is the files under /sso-static/: bridge.js, style.css, and
+// Unpoly's unpoly.min.js and unpoly.min.css.
+var Static = func() fs.FS {
+	sub, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
 	}
