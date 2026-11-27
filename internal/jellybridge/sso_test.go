@@ -92,15 +92,15 @@ func TestLoginRefuses(t *testing.T) {
 		return w
 	}
 	account := get("/sso/")
-	script := regexp.MustCompile(`/sso/assets/account-[^"]+\.js`).FindString(account.Body.String())
+	script := regexp.MustCompile(`/sso-static/assets/account-[^"]+\.js`).FindString(account.Body.String())
 	if account.Code != http.StatusOK || script == "" {
 		t.Fatalf("GET /sso/: %d, no script in %s", account.Code, account.Body)
 	}
 	for _, tc := range []struct {
 		path, has, cache string
 	}{
-		{"/sso/login", "/sso/bridge.js", "no-store"},
-		{"/sso/bridge.js", "jellyfin_credentials", "no-cache"},
+		{"/sso/login", "/sso-static/bridge.js", "no-store"},
+		{"/sso-static/bridge.js", "jellyfin_credentials", "no-cache"},
 		{script, "Jellyfin apps and sessions", "public, max-age=31536000, immutable"},
 	} {
 		w := get(tc.path)
@@ -108,7 +108,7 @@ func TestLoginRefuses(t *testing.T) {
 			t.Errorf("GET %s: %d, Cache-Control %q", tc.path, w.Code, w.Header().Get("Cache-Control"))
 		}
 	}
-	for _, path := range []string{"/sso/assets/", "/sso/assets/missing.js", "/sso/assets/../account.html", "/sso/account.html"} {
+	for _, path := range []string{"/sso-static/assets/", "/sso-static/assets/missing.js", "/sso-static/assets/../account.html", "/sso/account.html", "/sso/bridge.js", strings.Replace(script, "/sso-static/", "/sso/", 1), "/sso-static/account.html"} {
 		if w := get(path); w.Code == http.StatusOK {
 			t.Errorf("GET %s: %d", path, w.Code)
 		}

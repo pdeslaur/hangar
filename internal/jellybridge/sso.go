@@ -30,9 +30,6 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 //
 //   - GET /sso/login, a page that asks for a session for jellyfin-web's
 //     device ID and stores its token where jellyfin-web reads it.
-//   - GET /sso/assets/…, the pages' scripts and styles, from web.
-//   - GET /sso/bridge.js, the script signing jellyfin-web in and keeping
-//     it signed in, which the Proxy adds to jellyfin-web.
 //   - POST /sso/session, taking {"DeviceId": …} and answering a bridge
 //     token for the user's session on that device, made if it has none:
 //     {"AccessToken", "UserId", "ServerId", "ExpiresIn", "RefreshBefore"}.
@@ -48,6 +45,15 @@ var browserDevice = jellyfin.Device{Client: "Jellyfin Web", Name: "Web Browser",
 //
 // Only the single sign-on may reach these paths, and it has to set
 // UserHeader on every request to them, removing a client's own.
+//
+// It also serves their static files, under /sso-static/, without a user:
+//
+//   - GET /sso-static/bridge.js, the script signing jellyfin-web in and
+//     keeping it signed in, which the Proxy adds to jellyfin-web, and which
+//     loads before anyone has signed in.
+//   - GET /sso-static/assets/…, the pages' scripts and styles.
+//
+// So the sign-on covers /sso/* whole, and nothing under /sso-static/.
 type SSO struct {
 	// Apps signs apps in, and holds the sessions and the Jellyfin client.
 	Apps *Apps
@@ -79,8 +85,8 @@ func (s *SSO) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mux = http.NewServeMux()
 		s.mux.HandleFunc("GET /sso/{$}", serveFile("account.html", "no-store"))
 		s.mux.HandleFunc("GET /sso/login", serveFile("login.html", "no-store"))
-		s.mux.HandleFunc("GET /sso/bridge.js", serveFile("bridge.js", "no-cache"))
-		s.mux.HandleFunc("GET /sso/assets/{name}", func(w http.ResponseWriter, r *http.Request) {
+		s.mux.HandleFunc("GET /sso-static/bridge.js", serveFile("bridge.js", "no-cache"))
+		s.mux.HandleFunc("GET /sso-static/assets/{name}", func(w http.ResponseWriter, r *http.Request) {
 			serveFile("assets/"+r.PathValue("name"), "public, max-age=31536000, immutable")(w, r)
 		})
 		s.mux.HandleFunc("GET /sso/sessions", s.signedIn(s.serveSessions))

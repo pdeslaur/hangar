@@ -36,7 +36,8 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // all. Jellyfin gets the device's ID from the session, and the rest of the
 // device's description from the client when it gives one.
 //
-// It adds the bridge's script, /sso/bridge.js, to jellyfin-web's page.
+// It adds the bridge's script, /sso-static/bridge.js, to jellyfin-web's
+// page.
 //
 // Jellyfin's logins go through Apps: a password login is the bridge's, the
 // result of a Quick Connect login gets a bridge token in place of
@@ -171,7 +172,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // scriptTag adds the bridge's script to jellyfin-web.
-const scriptTag = `<script src="/sso/bridge.js"></script>`
+const scriptTag = `<script src="/sso-static/bridge.js"></script>`
 
 // maxWebPage bounds the size of jellyfin-web's page that addScript reads.
 const maxWebPage = 1 << 20
