@@ -45,8 +45,9 @@ flowchart LR
 
 - **Signing in.** Seerr sends a browser without a session to its login page, `/login`, which seerr-sso sends to `/sso/login`, through the sign-on. There, seerr-sso calls Seerr's `POST /api/v1/auth/jellyfin/quickconnect/initiate`, has jellyfin-bridge approve the code for the user, with `POST /bridge/quickconnect`, and calls Seerr's `authenticate` with its secret. Seerr logs in to Jellyfin with it, through jellyfin-bridge, which hands it a bridge token, and answers its session cookie, which seerr-sso passes to the browser, with a page sending it on to Seerr's home page. Seerr's own login page stays at `/login?local`, for a user of Seerr's alone.
 - **CSRF protection.** With it on, Seerr sets a CSRF secret, in the `_csrf` cookie, and a token made from it, in `XSRF-TOKEN`, and takes a POST carrying both: seerr-sso gets them from `GET /api/v1/status` first, and sends them on its calls, the token in `X-XSRF-TOKEN`. Seerr's session cookie is then `SameSite=Strict`, which a browser leaves out of a navigation that another site started, redirects included: seerr-sso ends signing in with a page, whose own navigation to Seerr is the site's, rather than one more redirect after the identity provider's. A link to Seerr from another site arrives without the cookie too, and signs in again through `/sso/login`, landing on Seerr's home page.
+- **Session length.** Seerr's sessions last 30 days, which it has no setting for. seerr-sso cuts them to `SESSION_DURATION` from their sign-in: with every session cookie Seerr sets, through `/sso/login` or its own sign-in, seerr-sso sets another, `seerr-sso-session`, holding when the session ends and an HMAC binding that time to the session cookie. A request whose session cookie has no such cookie, or a stale, forged or another session's one, reaches Seerr without its session cookie, as though signed out: Seerr sends the browser to sign in again, through `/sso/login`, without a prompt while the sign-on's own session lasts. A stolen session cookie is good no longer than that. The HMAC key is random at each start, so a restart has everyone sign in again.
 - **Signing out.** Seerr's sign-out ends its session and logs its Jellyfin token out, ending its bridge session, and seerr-sso marks the browser with a cookie, `seerr-sso-signed-out`: Seerr then sends it to its login page, which seerr-sso sends to `/sso/logout`, for the reverse proxy to sign out of the identity provider too.
-- **Everything else** goes to Seerr as it came, with the reverse proxy's `X-Forwarded-*` headers, without `USER_HEADER`.
+- **Everything else** goes to Seerr as it came, with the reverse proxy's `X-Forwarded-*` headers, without `USER_HEADER` or `seerr-sso-session`.
 
 ## Configuration
 
@@ -56,6 +57,7 @@ flowchart LR
 | `ADDR` | `127.0.0.1:5056` | Where it listens: the reverse proxy's upstream. |
 | `SEERR_URL` | `http://127.0.0.1:5055` | Seerr. |
 | `USER_HEADER` | `X-Bridge-User` | The header naming the signed-in user on requests to `/sso/`. |
+| `SESSION_DURATION` | `8h` | How long a Seerr session lasts from its sign-in, like `8h`. `0` leaves Seerr's 30 days. |
 
 It tells systemd it's ready, through `NOTIFY_SOCKET`, once it listens.
 

@@ -74,6 +74,10 @@ func (f *fakes) handler(t *testing.T) (*url.URL, string) {
 			io.WriteString(w, `{"id":1}`)
 		case "/api/v1/auth/logout":
 			io.WriteString(w, `{"status":"ok"}`)
+		case "/api/v1/auth/local":
+			// Seerr's own sign-in, which signs anyone in.
+			w.Header().Add("Set-Cookie", "connect.sid=s%3Alocal.sig; Path=/; HttpOnly; Secure")
+			io.WriteString(w, `{"id":2}`)
 		default:
 			io.WriteString(w, "seerr "+r.URL.Path)
 		}
