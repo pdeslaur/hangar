@@ -29,11 +29,6 @@ const maxDeviceID = 1024
 // its token has expired, finds its session rather than making another.
 const deviceCookie = "jellyfin-sso-device"
 
-// formerDeviceCookie is deviceCookie under jellyfin-sso's former name,
-// jellyfin-bridge: a browser holding it keeps its session, its device ID
-// moving to deviceCookie.
-const formerDeviceCookie = "jellyfin-bridge-device"
-
 // deviceCookieAge is how long deviceCookie lasts unused: browsers keep a
 // cookie 400 days at most.
 const deviceCookieAge = 400 * 24 * time.Hour
@@ -239,17 +234,10 @@ type sessionResponse struct {
 func (s *SSO) signIn(w http.ResponseWriter, r *http.Request, u user) (sessionResponse, error) {
 	ctx := r.Context()
 	var deviceID string
-	for _, name := range []string{deviceCookie, formerDeviceCookie} {
-		if c, err := r.Cookie(name); err == nil && c.Value != "" && len(c.Value) <= maxDeviceID {
-			deviceID = c.Value
-			break
-		}
-	}
-	if deviceID == "" {
+	if c, err := r.Cookie(deviceCookie); err == nil && c.Value != "" && len(c.Value) <= maxDeviceID {
+		deviceID = c.Value
+	} else {
 		deviceID = rand.Text()
-	}
-	if _, err := r.Cookie(formerDeviceCookie); err == nil {
-		http.SetCookie(w, &http.Cookie{Name: formerDeviceCookie, Path: "/sso/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
 	}
 	// Set again, to last deviceCookieAge from its last use.
 	http.SetCookie(w, &http.Cookie{

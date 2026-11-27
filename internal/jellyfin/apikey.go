@@ -28,9 +28,7 @@ const dateFormat = "2006-01-02 15:04:05.9999999"
 // it knows, which a Jellyfin release could change, and one Jellyfin hasn't
 // created yet. Jellyfin keeps its devices in memory, so nothing but API keys
 // may be written to its database this way.
-//
-// It deletes the keys called any of formerNames, as a renamed key's.
-func EnsureAPIKey(ctx context.Context, path, name, token string, formerNames ...string) error {
+func EnsureAPIKey(ctx context.Context, path, name, token string) error {
 	if name == "" || len(name) > 64 || token == "" {
 		return fmt.Errorf("jellyfin: an API key needs a name of 1 to 64 bytes and a token")
 	}
@@ -60,14 +58,6 @@ func EnsureAPIKey(ctx context.Context, path, name, token string, formerNames ...
 		return err
 	}
 	defer tx.Rollback()
-	for _, former := range formerNames {
-		if former == name {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM ApiKeys WHERE Name = ?`, former); err != nil {
-			return err
-		}
-	}
 	var present bool
 	err = tx.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM ApiKeys WHERE Name = ? AND AccessToken = ?)`,
@@ -76,7 +66,7 @@ func EnsureAPIKey(ctx context.Context, path, name, token string, formerNames ...
 		return err
 	}
 	if present {
-		return tx.Commit()
+		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ApiKeys WHERE Name = ?`, name); err != nil {
 		return err

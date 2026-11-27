@@ -83,19 +83,6 @@ func TestEnsureAPIKey(t *testing.T) {
 		}
 	}
 
-	// A key under a former name goes, whether the key changes or not.
-	for _, token := range []string{"cccc", "dddd"} {
-		if _, err := db.Exec(`INSERT INTO ApiKeys (DateCreated, DateLastActivity, Name, AccessToken) VALUES ('2026-01-01 00:00:00', '2026-01-01 00:00:00', 'old', 'eeee')`); err != nil {
-			t.Fatal(err)
-		}
-		if err := EnsureAPIKey(ctx, path, "jellyfin-sso", token, "old", "jellyfin-sso"); err != nil {
-			t.Fatalf("EnsureAPIKey with a former name: %v", err)
-		}
-		if got, want := strings.Join(apiKeys(t, db), " "), "sonarr=aaaa jellyfin-sso="+token; got != want {
-			t.Errorf("after EnsureAPIKey with a former name: keys %q, want %q", got, want)
-		}
-	}
-
 	var created string
 	if err := db.QueryRow(`SELECT DateCreated FROM ApiKeys WHERE Name = 'jellyfin-sso'`).Scan(&created); err != nil {
 		t.Fatal(err)

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -105,8 +106,7 @@ func run(ctx context.Context, cfg *config) error {
 	if err := waitForJellyfin(ctx, client); err != nil {
 		return err
 	}
-	// The key under jellyfin-sso's former name, jellyfin-bridge, goes.
-	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key, formerName); err != nil {
+	if err := jellyfin.EnsureAPIKey(ctx, cfg.JellyfinDB, cfg.APIKeyName, client.Key); err != nil {
 		return err
 	}
 	serverID, err := client.ServerID(ctx)
@@ -120,13 +120,7 @@ func run(ctx context.Context, cfg *config) error {
 		}
 	}
 
-	state := cfg.State
-	if state == "" {
-		state = filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-sso.db")
-		if err := moveFormerState(ctx, filepath.Join(filepath.Dir(cfg.JellyfinDB), formerName+".db"), state); err != nil {
-			return err
-		}
-	}
+	state := cmp.Or(cfg.State, filepath.Join(filepath.Dir(cfg.JellyfinDB), "jellyfin-sso.db"))
 	sessions, err := jellyfinsso.Open(ctx, state, cfg.Idle)
 	if err != nil {
 		return err
