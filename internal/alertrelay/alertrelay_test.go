@@ -276,8 +276,8 @@ func TestFormat(t *testing.T) {
 			want:        "FIRING A: something happened",
 		},
 		{
-			name:   "labels without a summary, alertgroup left out",
-			labels: map[string]string{"alertname": "A", "alertgroup": "ssh", "src": "192.0.2.10", "host": "web01"},
+			name:   "labels without a summary, the engine's left out",
+			labels: map[string]string{"alertname": "A", "alertgroup": "ssh", "stats_result": "logins", "src": "192.0.2.10", "host": "web01"},
 			want:   "FIRING A {host=web01, src=192.0.2.10}",
 		},
 		{

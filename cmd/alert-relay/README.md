@@ -18,7 +18,7 @@ RESOLVED HostLogsSilent: web01 sent no logs for 15 minutes
 FIRING SSHWithoutSecurityKey {host=web01, src=192.0.2.10, user=alice}
 ```
 
-The alert's `summary` annotation follows its name, or, without one, its other labels but `alertgroup`. A `description` annotation follows on the lines after.
+The alert's `summary` annotation follows its name, or, without one, its other labels but those the engine adds: `alertgroup`, and `stats_result`, the name of a LogsQL rule's stats result. A `description` annotation follows on the lines after.
 
 ## Trust
 

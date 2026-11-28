@@ -159,8 +159,18 @@ func notifyResolved(annotations map[string]string) bool {
 	return annotations["notify_resolved"] != "false"
 }
 
+// engineLabels are labels a rule engine adds to every alert, which say
+// nothing about what happened: the alert's name, shown first, vmalert's
+// group, and, for a LogsQL rule, the name of the stats result it counted.
+var engineLabels = map[string]bool{
+	"alertname":    true,
+	"alertgroup":   true,
+	"stats_result": true,
+}
+
 // format returns an alert's message: its status and name, then its summary,
-// or its other labels without one, and its description on the lines after.
+// or, without one, its labels but the engine's, and its description on the
+// lines after.
 func format(status string, labels, annotations map[string]string) string {
 	msg := status + " " + cmp.Or(labels["alertname"], "alert")
 	if summary := annotations["summary"]; summary != "" {
@@ -168,7 +178,7 @@ func format(status string, labels, annotations map[string]string) string {
 	} else {
 		var pairs []string
 		for _, k := range slices.Sorted(maps.Keys(labels)) {
-			if k != "alertname" && k != "alertgroup" {
+			if !engineLabels[k] {
 				pairs = append(pairs, k+"="+labels[k])
 			}
 		}
