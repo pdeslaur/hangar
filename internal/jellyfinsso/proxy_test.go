@@ -296,3 +296,102 @@ func TestAddMenuLink(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyHidesTokenInPlaybackInfo(t *testing.T) {
+	// Like Jellyfin, it writes the request's token into TranscodingUrl, and
+	// compresses what the client accepts. With ?br, it claims an encoding
+	// Go's Transport leaves as it is.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := parseAuthorization(r.Header.Get("Authorization"))["Token"]
+		body := `{"MediaSources":[{"Id":"abc","TranscodingUrl":"/videos/1/master.m3u8?DeviceId=dev1&MediaSourceId=abc&ApiKey=` + tok + `"}],"PlaySessionId":"p1"}`
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Has("huge") {
+			body += strings.Repeat(" ", maxPlaybackInfo)
+		}
+		switch {
+		case r.URL.Query().Has("br"):
+			w.Header().Set("Content-Encoding", "br")
+			io.WriteString(w, body)
+		case strings.Contains(r.Header.Get("Accept-Encoding"), "gzip"):
+			w.Header().Set("Content-Encoding", "gzip")
+			gz := gzip.NewWriter(w)
+			io.WriteString(gz, body)
+			gz.Close()
+		default:
+			io.WriteString(w, body)
+		}
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	ctx := context.Background()
+	s, _ := openStore(t)
+	session := newSession(t, s, Browser)
+	token, err := s.IssueToken(ctx, session.ID, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewProxy(target, NewApps(s, nil))
+
+	for _, tc := range []struct {
+		name, method, path string
+		// header sends the token in Authorization rather than the query.
+		header bool
+		code   int
+		// apiKey is TranscodingUrl's ApiKey.
+		apiKey string
+	}{
+		{"get", http.MethodGet, "/Items/1/PlaybackInfo", true, http.StatusOK, token},
+		{"post", http.MethodPost, "/Items/1/PlaybackInfo", true, http.StatusOK, token},
+		{"query token", http.MethodPost, "/items/1/playbackinfo/?ApiKey=" + token, false, http.StatusOK, token},
+		{"live stream", http.MethodPost, "/LiveStreams/Open", true, http.StatusOK, token},
+		// Not a PlaybackInfo: forwarded as it came.
+		{"another", http.MethodGet, "/Items/1/Other", true, http.StatusOK, "real"},
+		{"encoded", http.MethodPost, "/Items/1/PlaybackInfo?br", true, http.StatusBadGateway, ""},
+		{"huge", http.MethodPost, "/Items/1/PlaybackInfo?huge", true, http.StatusBadGateway, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.Header.Set("Accept-Encoding", "gzip")
+			if tc.header {
+				r.Header.Set("Authorization", session.Device.Header(token))
+			}
+			w := httptest.NewRecorder()
+			p.ServeHTTP(w, r)
+			resp := w.Result()
+			if resp.StatusCode != tc.code {
+				t.Fatalf("status %d, want %d: %s", resp.StatusCode, tc.code, w.Body)
+			}
+			if tc.code != http.StatusOK {
+				return
+			}
+			var body io.Reader = resp.Body
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				gz, err := gzip.NewReader(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = gz
+			}
+			raw, err := io.ReadAll(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := resp.Header.Get("Content-Length"); tc.apiKey == token && got != fmt.Sprint(len(raw)) {
+				t.Errorf("Content-Length %s, want %d", got, len(raw))
+			}
+			var info struct {
+				MediaSources []struct{ TranscodingUrl string }
+			}
+			if err := json.Unmarshal(raw, &info); err != nil {
+				t.Fatal(err)
+			}
+			u, err := url.Parse(info.MediaSources[0].TranscodingUrl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := u.Query().Get("ApiKey"); got != tc.apiKey {
+				t.Errorf("TranscodingUrl's ApiKey %q, want %q", got, tc.apiKey)
+			}
+		})
+	}
+}
