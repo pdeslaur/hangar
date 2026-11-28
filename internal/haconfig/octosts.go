@@ -5,15 +5,12 @@ package haconfig
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"sync"
 	"time"
 
+	"chainguard.dev/sdk/sts"
 	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
+	"golang.org/x/oauth2"
 )
 
 // SVIDSource fetches JWT-SVIDs, like the Workload API's workloadapi.Client.
@@ -21,76 +18,27 @@ type SVIDSource interface {
 	FetchJWTSVID(ctx context.Context, params jwtsvid.Params) (*jwtsvid.SVID, error)
 }
 
-// OctoSTS mints GitHub tokens from octo-sts with the workload's JWT-SVIDs,
-// and reuses each for most of its hour.
-type OctoSTS struct {
-	// URL is octo-sts's, like https://octo-sts.dev.
-	URL string
-	// Audience is the JWT-SVIDs', which the trust policy checks; octo-sts
-	// defaults it to its domain, like octo-sts.dev.
-	Audience string
-	// Scope is the repository, owner/name, holding the trust policy.
-	Scope string
-	// Identity names the trust policy, .github/chainguard/<Identity>.sts.yaml.
-	Identity string
-	SVIDs    SVIDSource
-	HTTP     *http.Client
-
-	mu      sync.Mutex
-	token   string
-	expires time.Time
+// OctoSTS returns GitHub tokens that octo-sts, at url, mints for the
+// workload's JWT-SVIDs of audience, per the trust policy
+// .github/chainguard/<identity>.sts.yaml of the repository scope,
+// owner/name. Each token is reused until 10 minutes before its hour ends.
+func OctoSTS(ctx context.Context, svids SVIDSource, url, audience, scope, identity string) oauth2.TokenSource {
+	exchanger := sts.New(url, audience, sts.WithScope(scope), sts.WithIdentity(identity))
+	tokens := sts.NewContextTokenSource(ctx, svidTokens{ctx, svids, audience}, exchanger)
+	return oauth2.ReuseTokenSourceWithExpiry(nil, tokens, 10*time.Minute)
 }
 
-// tokenReuse is how long it reuses a token: GitHub's installation tokens
-// last an hour, and octo-sts doesn't say when one expires.
-const tokenReuse = 45 * time.Minute
-
-// Token returns a GitHub token, minting one when the last is too old.
-func (o *OctoSTS) Token(ctx context.Context) (string, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.token != "" && time.Now().Before(o.expires) {
-		return o.token, nil
-	}
-	token, err := o.mint(ctx)
-	if err != nil {
-		return "", err
-	}
-	o.token, o.expires = token, time.Now().Add(tokenReuse)
-	return token, nil
+// svidTokens are the workload's JWT-SVIDs, as tokens.
+type svidTokens struct {
+	ctx      context.Context
+	svids    SVIDSource
+	audience string
 }
 
-func (o *OctoSTS) mint(ctx context.Context) (string, error) {
-	svid, err := o.SVIDs.FetchJWTSVID(ctx, jwtsvid.Params{Audience: o.Audience})
+func (s svidTokens) Token() (*oauth2.Token, error) {
+	svid, err := s.svids.FetchJWTSVID(s.ctx, jwtsvid.Params{Audience: s.audience})
 	if err != nil {
-		return "", fmt.Errorf("fetching a JWT-SVID for %s: %w", o.Audience, err)
+		return nil, fmt.Errorf("fetching a JWT-SVID for %s: %w", s.audience, err)
 	}
-	u := o.URL + "/sts/exchange?" + url.Values{"scope": {o.Scope}, "identity": {o.Identity}}.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+svid.Marshal())
-	resp, err := o.HTTP.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("octo-sts exchange for %s as %s: %s: %s", o.Scope, o.Identity, resp.Status, b)
-	}
-	var r struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(b, &r); err != nil {
-		return "", fmt.Errorf("octo-sts exchange: %w", err)
-	}
-	if r.Token == "" {
-		return "", fmt.Errorf("octo-sts exchange for %s as %s: no token", o.Scope, o.Identity)
-	}
-	return r.Token, nil
+	return &oauth2.Token{AccessToken: svid.Marshal(), Expiry: svid.Expiry}, nil
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/fsnotify/fsnotify"
+	"github.com/google/go-github/v93/github"
 )
 
 // UIFiles are the files Home Assistant's UI editors write, which the
@@ -99,67 +100,91 @@ func (s *Syncer) Run(ctx context.Context) error {
 // commits them onto it in the sync branch and opens its pull request. When
 // they're the same, it closes the pull request, if one is open.
 func (s *Syncer) Push(ctx context.Context) error {
-	base, _, _, err := s.GitHub.Head(ctx, s.Branch, "")
+	g := s.GitHub
+	base, _, err := g.Head(ctx, s.Branch, "")
 	if err != nil {
 		return err
 	}
-	tree, entries, err := s.GitHub.Tree(ctx, base)
+	commit, _, err := g.Git.GetCommit(ctx, g.Owner, g.Repo, base)
 	if err != nil {
 		return err
 	}
-	changes, err := s.changes(entries)
+	tree, _, err := g.Git.GetTree(ctx, g.Owner, g.Repo, commit.GetTree().GetSHA(), false)
 	if err != nil {
 		return err
 	}
-	pull, open, err := s.GitHub.OpenPull(ctx, s.SyncBranch, s.Branch)
+	changes, err := s.changes(tree.Entries)
 	if err != nil {
 		return err
+	}
+	pulls, _, err := g.PullRequests.List(ctx, g.Owner, g.Repo, &github.PullRequestListOptions{
+		State: "open",
+		Head:  g.Owner + ":" + s.SyncBranch,
+		Base:  s.Branch,
+	})
+	if err != nil {
+		return err
+	}
+	var pull *github.PullRequest
+	if len(pulls) > 0 {
+		pull = pulls[0]
 	}
 	if len(changes) == 0 {
 		s.pending = nil
-		if !open {
+		if pull == nil {
 			return nil
 		}
-		clog.InfoContext(ctx, "closing the pull request, the UI files are the branch's", "pull", pull.Number)
-		return s.GitHub.ClosePull(ctx, pull.Number)
+		clog.InfoContext(ctx, "closing the pull request, the UI files are the branch's", "pull", pull.GetNumber())
+		_, _, err := g.PullRequests.Edit(ctx, g.Owner, g.Repo, pull.GetNumber(), &github.PullRequest{State: new("closed")})
+		return err
 	}
 
-	newTree, err := s.GitHub.CreateTree(ctx, tree, changes)
+	newTree, _, err := g.Git.CreateTree(ctx, g.Owner, g.Repo, tree.GetSHA(), changes)
 	if err != nil {
 		return err
 	}
 	head := ""
-	if open {
+	if pull != nil {
 		// A tree is its content's hash: the pull request already holds
 		// these files on this branch, as after a restart.
-		if pullTree, _, err := s.GitHub.Tree(ctx, pull.Head.SHA); err == nil && pullTree == newTree {
-			head = pull.Head.SHA
+		c, _, err := g.Git.GetCommit(ctx, g.Owner, g.Repo, pull.GetHead().GetSHA())
+		if err == nil && c.GetTree().GetSHA() == newTree.GetSHA() {
+			head = c.GetSHA()
 		}
 	}
 	if head == "" {
 		var paths []string
 		for _, c := range changes {
-			paths = append(paths, c.Path)
+			paths = append(paths, c.GetPath())
 		}
-		message := "Sync the UI's edits from Home Assistant\n\n" + strings.Join(paths, "\n") + "\n"
-		if head, err = s.GitHub.CreateCommit(ctx, message, newTree, base); err != nil {
+		created, _, err := g.Git.CreateCommit(ctx, g.Owner, g.Repo, github.Commit{
+			Message: new("Sync the UI's edits from Home Assistant\n\n" + strings.Join(paths, "\n") + "\n"),
+			Tree:    &github.Tree{SHA: newTree.SHA},
+			Parents: []*github.Commit{{SHA: &base}},
+		}, nil)
+		if err != nil {
 			return err
 		}
-		if err := s.GitHub.SetBranch(ctx, s.SyncBranch, head); err != nil {
+		head = created.GetSHA()
+		if err := g.SetBranch(ctx, s.SyncBranch, head); err != nil {
 			return err
 		}
 	}
-	number := pull.Number
-	if !open {
-		body := "Home Assistant's UI edited these files. ha-config-sync merges this pull request once its Checks pass, and replaces its commit with each new edit."
-		if number, err = s.GitHub.CreatePull(ctx, s.SyncBranch, s.Branch, "Sync the UI's edits from Home Assistant", body); err != nil {
+	if pull == nil {
+		pull, _, err = g.PullRequests.Create(ctx, g.Owner, g.Repo, github.CreatePullRequest{
+			Title: new("Sync the UI's edits from Home Assistant"),
+			Head:  s.SyncBranch,
+			Base:  s.Branch,
+			Body:  new("Home Assistant's UI edited these files. ha-config-sync merges this pull request once its Checks pass, and replaces its commit with each new edit."),
+		})
+		if err != nil {
 			return err
 		}
 	}
 	if s.pending == nil || s.pending.sha != head {
-		s.pending = &pendingPull{number: number, sha: head, since: time.Now()}
+		s.pending = &pendingPull{number: pull.GetNumber(), sha: head, since: time.Now()}
 	}
-	clog.InfoContext(ctx, "pushed the UI's edits", "pull", number, "sha", head)
+	clog.InfoContext(ctx, "pushed the UI's edits", "pull", pull.GetNumber(), "sha", head)
 	return nil
 }
 
@@ -187,7 +212,9 @@ func (s *Syncer) Settle(ctx context.Context) (retry bool, err error) {
 		return false, s.failed(ctx, p.sha, fmt.Sprintf("Checks failed on pull request #%d.", p.number))
 	}
 	s.pending = nil
-	if err := s.GitHub.MergePull(ctx, p.number, p.sha); err != nil {
+	g := s.GitHub
+	_, _, err = g.PullRequests.Merge(ctx, g.Owner, g.Repo, p.number, "", &github.PullRequestOptions{SHA: p.sha, MergeMethod: "squash"})
+	if err != nil {
 		return true, errors.Join(err, s.failed(ctx, p.sha, fmt.Sprintf("Merging pull request #%d failed: %v", p.number, err)))
 	}
 	clog.InfoContext(ctx, "merged the UI's edits", "pull", p.number, "sha", p.sha)
@@ -204,25 +231,26 @@ func (s *Syncer) failed(ctx context.Context, sha, message string) error {
 
 // changes returns the UI files that differ from entries, the branch's top
 // directory.
-func (s *Syncer) changes(entries []TreeEntry) ([]FileChange, error) {
+func (s *Syncer) changes(entries []*github.TreeEntry) ([]*github.TreeEntry, error) {
 	remote := map[string]string{}
 	for _, e := range entries {
-		if e.Type == "blob" {
-			remote[e.Path] = e.SHA
+		if e.GetType() == "blob" {
+			remote[e.GetPath()] = e.GetSHA()
 		}
 	}
-	var changes []FileChange
+	var changes []*github.TreeEntry
 	for _, name := range UIFiles {
 		data, err := os.ReadFile(filepath.Join(s.Dir, name))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			if _, ok := remote[name]; ok {
-				changes = append(changes, FileChange{Path: name, Delete: true})
+				// No sha and no content: GitHub removes the file.
+				changes = append(changes, &github.TreeEntry{Path: new(name), Mode: new("100644"), Type: new("blob")})
 			}
 		case err != nil:
 			return nil, err
 		case blobSHA(data) != remote[name]:
-			changes = append(changes, FileChange{Path: name, Content: string(data)})
+			changes = append(changes, &github.TreeEntry{Path: new(name), Mode: new("100644"), Type: new("blob"), Content: new(string(data))})
 		}
 	}
 	return changes, nil

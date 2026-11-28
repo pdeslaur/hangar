@@ -33,13 +33,13 @@ config_sync:
 ## How it works
 
 - **The integration.** As it starts, before Home Assistant, it writes `config_sync` into `custom_components/` and tells systemd it's ready. Home Assistant loads an integration's code only as it starts, so a new version takes a restart. The integration serves HTTP on `.config_sync/api.sock`: `POST /check` runs Home Assistant's configuration check, `POST /reload` the reload services of `automation`, `script`, `scene`, or `homeassistant.reload_all`, `POST /failed` and `POST /succeeded` raise or dismiss a persistent notification and fire `config_sync_failed` or `config_sync_succeeded`, with `kind` (`deploy` or `sync`), `sha` and `message`, for automations to forward.
-- **Deploying.** Every `POLL_INTERVAL`, it asks for `BRANCH`'s head with its last ETag, which costs no rate limit while the branch hasn't moved. A new commit waits for its `Chainguard Checks` check runs: when they fail, or none pass within `CHECKS_TIMEOUT`, it skips the commit. Once they pass, it extracts the commit's owned directories, regular files only, swaps those that changed into place with renames, and has Home Assistant check the configuration. A refused configuration is rolled back, reported, and the commit skipped; an accepted one is reloaded, `homeassistant.reload_all` when `packages/` changed, since a package can hold any integration. It remembers the commits it applied and skipped in `.config_sync/state.json`.
+- **Deploying.** Every `POLL_INTERVAL`, it asks for `BRANCH`'s head, conditional on the last one it saw, which costs no rate limit while the branch hasn't moved. A new commit waits for its `Chainguard Checks` check runs: when they fail, or none pass within `CHECKS_TIMEOUT`, it skips the commit. Once they pass, it extracts the commit's owned directories, regular files only, swaps those that changed into place with renames, and has Home Assistant check the configuration. A refused configuration is rolled back, reported, and the commit skipped; an accepted one is reloaded, `homeassistant.reload_all` when `packages/` changed, since a package can hold any integration. It remembers the commits it applied and skipped in `.config_sync/state.json`.
 - **Syncing.** It watches the configuration directory for the UI's files, and `DEBOUNCE` after the last write, or as it starts, compares them with `BRANCH`'s by their git hashes. When they differ, it commits them on `BRANCH` through the Git Data API, moves `SYNC_BRANCH` to that commit by force, and opens a pull request if none is open. Once the commit's Checks pass, it squash-merges it, naming the commit it checked, so a newer one is never merged unchecked. When they fail, it leaves the pull request open, to show why, and reports it. When the UI's files match `BRANCH` again, it closes the pull request.
 - **Without branch protection.** It works on private repositories of GitHub's free plan, which have no rulesets or auto-merge: it waits for the Checks itself, both before merging and before deploying, whoever pushed.
 
 ## Trust
 
-- **GitHub.** It fetches a JWT-SVID for `OCTO_STS_AUDIENCE` from the Workload API and exchanges it at octo-sts for a token of the repository's trust policy, `.github/chainguard/<IDENTITY>.sts.yaml`, which it reuses for 45 minutes. The policy needs `contents: write` and `pull_requests: write` to sync, and `checks: read`:
+- **GitHub.** It fetches a JWT-SVID for `OCTO_STS_AUDIENCE` from the Workload API and exchanges it at octo-sts, with the [Chainguard SDK](https://github.com/chainguard-dev/sdk), for a token of the repository's trust policy, `.github/chainguard/<IDENTITY>.sts.yaml`, which it reuses for 50 minutes of its hour. The policy needs `contents: write` and `pull_requests: write` to sync, and `checks: read`:
 
   ```yaml
   issuer: https://oidc.example.org
@@ -64,7 +64,6 @@ config_sync:
 | `IDENTITY` | `ha-config-sync` | The repository's octo-sts trust policy. |
 | `OCTO_STS_URL` | `https://octo-sts.dev` | octo-sts. |
 | `OCTO_STS_AUDIENCE` | `octo-sts.dev` | The JWT-SVIDs' audience. |
-| `GITHUB_API` | `https://api.github.com` | GitHub's REST API. |
 | `POLL_INTERVAL` | `30s` | How often it looks for new commits and Checks. |
 | `DEBOUNCE` | `30s` | How long the UI's files stay unwritten before it syncs. |
 | `CHECKS_TIMEOUT` | `30m` | How long it waits for a commit's Checks. |

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,11 +16,13 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
+	"github.com/google/go-github/v93/github"
 	"github.com/pdeslaur/hangar/internal/haconfig"
 	"github.com/pdeslaur/hangar/internal/haconfig/integration"
 	"github.com/pdeslaur/hangar/internal/systemd"
 	"github.com/sethvargo/go-envconfig/v2"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
+	"golang.org/x/oauth2"
 )
 
 type config struct {
@@ -34,7 +35,6 @@ type config struct {
 	Branch string `env:"BRANCH,default=main"`
 	// SyncBranch carries the UI's edits; it moves it by force.
 	SyncBranch string `env:"SYNC_BRANCH,default=ha-ui-sync"`
-	GitHubAPI  string `env:"GITHUB_API,default=https://api.github.com"`
 	// OctoSTSURL is octo-sts's, which mints its GitHub tokens.
 	OctoSTSURL string `env:"OCTO_STS_URL,default=https://octo-sts.dev"`
 	// OctoSTSAudience is its JWT-SVIDs'.
@@ -85,20 +85,15 @@ func run(ctx context.Context, cfg *config) error {
 		return err
 	}
 	defer svids.Close()
-	gh := &haconfig.GitHub{
-		API:   cfg.GitHubAPI,
-		Owner: owner,
-		Repo:  repo,
-		Tokens: &haconfig.OctoSTS{
-			URL:      cfg.OctoSTSURL,
-			Audience: cfg.OctoSTSAudience,
-			Scope:    cfg.Repository,
-			Identity: cfg.Identity,
-			SVIDs:    svids,
-			HTTP:     &http.Client{Timeout: 30 * time.Second},
-		},
-		HTTP: &http.Client{Timeout: 2 * time.Minute},
+	tokens := haconfig.OctoSTS(ctx, svids, cfg.OctoSTSURL, cfg.OctoSTSAudience, cfg.Repository, cfg.Identity)
+	client, err := github.NewClient(
+		github.WithHTTPClient(oauth2.NewClient(ctx, tokens)),
+		github.WithTimeout(2*time.Minute),
+	)
+	if err != nil {
+		return err
 	}
+	gh := &haconfig.GitHub{Client: client, Owner: owner, Repo: repo}
 	hass := haconfig.NewHass(filepath.Join(cfg.ConfigDir, haconfig.StateDir, "api.sock"))
 
 	deployer := &haconfig.Deployer{

@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -20,12 +19,15 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/google/go-github/v93/github"
 )
 
 // fakeGitHub is a repository, served as the REST API GitHub client uses.
 // Commits hold whole trees: path → content.
 type fakeGitHub struct {
-	t *testing.T
+	t   *testing.T
+	url string
 
 	mu       sync.Mutex
 	trees    map[string]map[string]string
@@ -66,18 +68,13 @@ func newFakeGitHub(t *testing.T) (*fakeGitHub, *GitHub) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(srv.Close)
-	return f, &GitHub{
-		API:    srv.URL,
-		Owner:  "owner",
-		Repo:   "repo",
-		Tokens: staticToken("token"),
-		HTTP:   srv.Client(),
+	f.url = srv.URL
+	client, err := github.NewClient(github.WithAuthToken("token"), github.WithURLs(new(srv.URL+"/"), new(srv.URL+"/")))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return f, &GitHub{Client: client, Owner: "owner", Repo: "repo"}
 }
-
-type staticToken string
-
-func (s staticToken) Token(context.Context) (string, error) { return string(s), nil }
 
 // commit adds a commit of files onto branch, and returns its hash.
 func (f *fakeGitHub) commit(branch string, files map[string]string) string {
@@ -138,6 +135,15 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad token", http.StatusUnauthorized)
 		return
 	}
+	if sha, ok := strings.CutPrefix(r.URL.Path, "/codeload/"); ok {
+		c, ok := f.commits[sha]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(tarball(f.t, "owner-repo-"+sha[:7], f.trees[c.tree]))
+		return
+	}
 	path, ok := strings.CutPrefix(r.URL.Path, "/repos/owner/repo/")
 	if !ok {
 		http.NotFound(w, r)
@@ -183,38 +189,38 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, map[string]any{"check_runs": runs})
 	case route == "GET tarball":
-		c, ok := f.commits[parts[1]]
-		if !ok {
+		if _, ok := f.commits[parts[1]]; !ok {
 			http.NotFound(w, r)
 			return
 		}
-		w.Write(tarball(f.t, "owner-repo-"+parts[1][:7], f.trees[c.tree]))
+		// As GitHub does, to codeload.
+		http.Redirect(w, r, f.url+"/codeload/"+parts[1], http.StatusFound)
 	case route == "GET git/commits":
 		c, ok := f.commits[parts[2]]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, map[string]any{"tree": map[string]string{"sha": c.tree}})
+		writeJSON(w, map[string]any{"sha": parts[2], "tree": map[string]string{"sha": c.tree}})
 	case route == "GET git/trees":
 		files, ok := f.trees[parts[2]]
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		var entries []TreeEntry
+		var entries []*github.TreeEntry
 		dirs := map[string]bool{}
 		for p, content := range files {
 			if top, _, nested := strings.Cut(p, "/"); nested {
 				if !dirs[top] {
 					dirs[top] = true
-					entries = append(entries, TreeEntry{Path: top, Type: "tree", SHA: "dir"})
+					entries = append(entries, &github.TreeEntry{Path: new(top), Type: new("tree"), SHA: new("dir")})
 				}
 				continue
 			}
-			entries = append(entries, TreeEntry{Path: p, Type: "blob", SHA: blobSHA([]byte(content))})
+			entries = append(entries, &github.TreeEntry{Path: new(p), Type: new("blob"), SHA: new(blobSHA([]byte(content)))})
 		}
-		writeJSON(w, map[string]any{"tree": entries})
+		writeJSON(w, map[string]any{"sha": parts[2], "tree": entries})
 	case route == "POST git/trees":
 		var req struct {
 			BaseTree string           `json:"base_tree"`

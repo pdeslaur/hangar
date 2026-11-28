@@ -180,7 +180,7 @@ func TestDeployRollsBackRefusedConfig(t *testing.T) {
 
 	// Skipped: it isn't tried again.
 	fh.setErrors("")
-	d.etag = ""
+	d.head = ""
 	if err := d.Poll(ctx); err != nil {
 		t.Fatal(err)
 	}

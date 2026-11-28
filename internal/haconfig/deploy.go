@@ -54,7 +54,8 @@ type Deployer struct {
 	// skipping it.
 	ChecksTimeout time.Duration
 
-	etag  string
+	// head is the branch's commit it last saw.
+	head  string
 	state deployState
 	// pending is the commit waiting for its Checks, and since when.
 	pending      string
@@ -92,12 +93,12 @@ func (d *Deployer) Run(ctx context.Context) error {
 // Poll looks for a new commit on the branch, and deploys it once its Checks
 // passed.
 func (d *Deployer) Poll(ctx context.Context) error {
-	sha, etag, changed, err := d.GitHub.Head(ctx, d.Branch, d.etag)
+	sha, changed, err := d.GitHub.Head(ctx, d.Branch, d.head)
 	if err != nil {
 		return err
 	}
 	if changed {
-		d.etag = etag
+		d.head = sha
 		if sha != d.pending {
 			d.pending, d.pendingSince = sha, time.Now()
 		}
