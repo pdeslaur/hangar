@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,10 +18,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/google/go-github/v93/github"
 )
-
-// UIFiles are the files Home Assistant's UI editors write, which the
-// repository receives from Home Assistant.
-var UIFiles = []string{"automations.yaml", "scripts.yaml", "scenes.yaml"}
 
 // Syncer carries the UI files' edits to the repository, as a pull request
 // from one branch that it merges once its Checks passed.
@@ -74,7 +71,7 @@ func (s *Syncer) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case ev := <-w.Events:
-			if filepath.Dir(ev.Name) == filepath.Clean(s.Dir) && slices.Contains(UIFiles, filepath.Base(ev.Name)) {
+			if filepath.Dir(ev.Name) == filepath.Clean(s.Dir) && isUIFile(filepath.Base(ev.Name)) {
 				push.Reset(s.Debounce)
 			}
 		case err := <-w.Errors:
@@ -105,15 +102,11 @@ func (s *Syncer) Push(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	commit, _, err := g.Git.GetCommit(ctx, g.Owner, g.Repo, base)
+	tree, remote, err := g.Root(ctx, base)
 	if err != nil {
 		return err
 	}
-	tree, _, err := g.Git.GetTree(ctx, g.Owner, g.Repo, commit.GetTree().GetSHA(), false)
-	if err != nil {
-		return err
-	}
-	changes, err := s.changes(tree.Entries)
+	changes, err := s.changes(remote)
 	if err != nil {
 		return err
 	}
@@ -139,7 +132,7 @@ func (s *Syncer) Push(ctx context.Context) error {
 		return err
 	}
 
-	newTree, _, err := g.Git.CreateTree(ctx, g.Owner, g.Repo, tree.GetSHA(), changes)
+	newTree, _, err := g.Git.CreateTree(ctx, g.Owner, g.Repo, tree, changes)
 	if err != nil {
 		return err
 	}
@@ -229,17 +222,11 @@ func (s *Syncer) failed(ctx context.Context, sha, message string) error {
 	return s.Hass.Failed(ctx, KindSync, sha, message)
 }
 
-// changes returns the UI files that differ from entries, the branch's top
-// directory.
-func (s *Syncer) changes(entries []*github.TreeEntry) ([]*github.TreeEntry, error) {
-	remote := map[string]string{}
-	for _, e := range entries {
-		if e.GetType() == "blob" {
-			remote[e.GetPath()] = e.GetSHA()
-		}
-	}
+// changes returns the UI files that differ from remote, the git hashes of the
+// files at the top of the branch.
+func (s *Syncer) changes(remote map[string]string) ([]*github.TreeEntry, error) {
 	var changes []*github.TreeEntry
-	for _, name := range UIFiles {
+	for _, name := range slices.Sorted(maps.Keys(UIFiles)) {
 		data, err := os.ReadFile(filepath.Join(s.Dir, name))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -262,4 +249,9 @@ func blobSHA(data []byte) string {
 	fmt.Fprintf(h, "blob %d\x00", len(data))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func isUIFile(name string) bool {
+	_, ok := UIFiles[name]
+	return ok
 }

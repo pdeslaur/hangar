@@ -6,13 +6,13 @@ It authenticates to GitHub with the pod's [SPIFFE](https://spiffe.io) identity, 
 
 ## Who owns what
 
-Each file has one writer, so nothing merges and nothing loops.
-
 | Paths | Owner |
 |---|---|
 | `automations/`, `scripts/`, `scenes/`, `packages/` | The repository. Home Assistant shows them read-only. |
-| `automations.yaml`, `scripts.yaml`, `scenes.yaml` | The UI, whose editors write only these. The repository receives them. |
+| `automations.yaml`, `scripts.yaml`, `scenes.yaml` | Both. The UI's editors write only these; its edits go to the repository, and the repository's come back, unless the UI edited the same file since. |
 | `configuration.yaml`, `.storage/` and the rest | Neither: never deployed, never synced. |
+
+Nothing merges: when the UI and the repository both edit a UI file, the UI's edits win, and the repository's are redone. A deploy writing a UI file only matches what Home Assistant already has once its sync merges, so nothing loops. A UI save landing between the comparison and the rename is lost, a window of milliseconds.
 
 `configuration.yaml` loads both, with labeled keys, and enables the integration:
 
@@ -33,7 +33,7 @@ config_sync:
 ## How it works
 
 - **The integration.** As it starts, before Home Assistant, it writes `config_sync` into `custom_components/` and tells systemd it's ready. Home Assistant loads an integration's code only as it starts, so a new version takes a restart. The integration serves HTTP on `.config_sync/api.sock`: `POST /check` runs Home Assistant's configuration check, `POST /reload` the reload services of `automation`, `script`, `scene`, or `homeassistant.reload_all`, `POST /failed` and `POST /succeeded` raise or dismiss a persistent notification and fire `config_sync_failed` or `config_sync_succeeded`, with `kind` (`deploy` or `sync`), `sha` and `message`, for automations to forward.
-- **Deploying.** Every `POLL_INTERVAL`, it asks for `BRANCH`'s head, conditional on the last one it saw, which costs no rate limit while the branch hasn't moved. A new commit waits for its `Chainguard Checks` check runs: when they fail, or none pass within `CHECKS_TIMEOUT`, it skips the commit. Once they pass, it extracts the commit's owned directories, regular files only, swaps those that changed into place with renames, and has Home Assistant check the configuration. A refused configuration is rolled back, reported, and the commit skipped; an accepted one is reloaded, `homeassistant.reload_all` when `packages/` changed, since a package can hold any integration. It remembers the commits it applied and skipped in `.config_sync/state.json`.
+- **Deploying.** Every `POLL_INTERVAL`, it asks for `BRANCH`'s head, conditional on the last one it saw, which costs no rate limit while the branch hasn't moved. A new commit waits for its `Chainguard Checks` check runs: when they fail, or none pass within `CHECKS_TIMEOUT`, it skips the commit. Once they pass, it extracts the commit's owned directories and UI files, regular files only. It takes a UI file only when Home Assistant's copy is still the last applied commit's, by its git hash, so only the repository changed it; when Home Assistant's copy is neither that one nor the commit's, the UI has edits the repository doesn't have yet, and it skips the commit and reports it, and the UI's next sync supersedes the repository's edits. It swaps what changed into place with renames, and has Home Assistant check the configuration. A refused configuration is rolled back, reported, and the commit skipped; an accepted one is reloaded, `homeassistant.reload_all` when `packages/` changed, since a package can hold any integration. It remembers the commits it applied and skipped in `.config_sync/state.json`.
 - **Syncing.** It watches the configuration directory for the UI's files, and `DEBOUNCE` after the last write, or as it starts, compares them with `BRANCH`'s by their git hashes. When they differ, it commits them on `BRANCH` through the Git Data API, moves `SYNC_BRANCH` to that commit by force, and opens a pull request if none is open. Once the commit's Checks pass, it squash-merges it, naming the commit it checked, so a newer one is never merged unchecked. When they fail, it leaves the pull request open, to show why, and reports it. When the UI's files match `BRANCH` again, it closes the pull request.
 - **Without branch protection.** It works on private repositories of GitHub's free plan, which have no rulesets or auto-merge: it waits for the Checks itself, both before merging and before deploying, whoever pushed.
 

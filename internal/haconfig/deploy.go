@@ -29,6 +29,16 @@ var Owned = map[string]string{
 	"packages":    ReloadAll,
 }
 
+// UIFiles are the files Home Assistant's UI editors write, by the reload a
+// change to each needs. Home Assistant's edits go to the repository, and the
+// repository's come back, unless Home Assistant has edits of its own the
+// repository doesn't have yet.
+var UIFiles = map[string]string{
+	"automations.yaml": ReloadAutomation,
+	"scripts.yaml":     ReloadScript,
+	"scenes.yaml":      ReloadScene,
+}
+
 // StateDir is the directory, under the configuration directory, holding
 // what ha-config-sync keeps: the integration's socket, its state, and the
 // directories of a deploy.
@@ -124,9 +134,11 @@ func (d *Deployer) Poll(ctx context.Context) error {
 	return d.Apply(ctx, sha)
 }
 
-// Apply deploys sha: it replaces the owned directories that changed, has
-// Home Assistant check the configuration, and reloads what changed, or puts
-// the directories back when the check fails.
+// Apply deploys sha: it replaces the owned directories that changed, and the
+// UI files only the repository changed, has Home Assistant check the
+// configuration, and reloads what changed, or puts them back when the check
+// fails. When Home Assistant has edits of its own to a UI file the commit
+// changes, it skips the commit.
 func (d *Deployer) Apply(ctx context.Context, sha string) error {
 	// Before touching anything: a check it can't ask for would leave the
 	// files unchecked.
@@ -153,6 +165,14 @@ func (d *Deployer) Apply(ctx context.Context, sha string) error {
 			changed = append(changed, name)
 		}
 	}
+	ui, conflicts, err := d.uiChanges(ctx, staging)
+	if err != nil {
+		return err
+	}
+	if len(conflicts) > 0 {
+		return d.skip(ctx, sha, fmt.Sprintf("Both Home Assistant's UI and %s edited %s since %s. Kept the UI's edits, which its next sync commits over the repository's: redo those once it merges.", sha, strings.Join(conflicts, ", "), d.state.Applied))
+	}
+	changed = append(changed, ui...)
 	if len(changed) == 0 {
 		clog.InfoContext(ctx, "nothing to deploy", "sha", sha)
 		return d.applied(ctx, sha)
@@ -204,17 +224,61 @@ func (d *Deployer) skip(ctx context.Context, sha, message string) error {
 	return d.save()
 }
 
-// reloadsOf returns the reloads the changed directories need: all of them
-// at once when packages changed.
+// reloadsOf returns the reloads the changed directories and UI files need,
+// each once: all of them at once when packages changed.
 func reloadsOf(changed []string) []string {
 	var reloads []string
 	for _, name := range changed {
-		if Owned[name] == ReloadAll {
+		reload, ok := Owned[name]
+		if !ok {
+			reload = UIFiles[name]
+		}
+		if reload == ReloadAll {
 			return []string{ReloadAll}
 		}
-		reloads = append(reloads, Owned[name])
+		if !slices.Contains(reloads, reload) {
+			reloads = append(reloads, reload)
+		}
 	}
 	return reloads
+}
+
+// uiChanges returns the UI files of staging the deploy writes: those whose
+// copy on disk is still the last applied commit's, so that only the
+// repository changed them. A UI file the repository and Home Assistant both
+// changed is a conflict. Before any commit was applied, or for a UI file the
+// commit lacks, it leaves Home Assistant's copy alone.
+func (d *Deployer) uiChanges(ctx context.Context, staging string) (changed, conflicts []string, err error) {
+	if d.state.Applied == "" {
+		return nil, nil, nil
+	}
+	_, base, err := d.GitHub.Root(ctx, d.state.Applied)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, name := range slices.Sorted(maps.Keys(UIFiles)) {
+		want, err := os.ReadFile(filepath.Join(staging, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		have, err := os.ReadFile(filepath.Join(d.Dir, name))
+		missing := errors.Is(err, fs.ErrNotExist)
+		if err != nil && !missing {
+			return nil, nil, err
+		}
+		switch {
+		case !missing && bytes.Equal(have, want):
+			// Already Home Assistant's, as after its sync merged.
+		case missing && base[name] == "", !missing && blobSHA(have) == base[name]:
+			changed = append(changed, name)
+		default:
+			conflicts = append(conflicts, name)
+		}
+	}
+	return changed, conflicts, nil
 }
 
 // extract writes the owned directories of sha's tarball into dir, each
@@ -234,7 +298,7 @@ func (d *Deployer) extract(ctx context.Context, sha, dir string) error {
 }
 
 // extractOwned writes the regular files of a gzipped tarball, under its top
-// directory, that are in an owned directory, into dir.
+// directory, that are UI files or in an owned directory, into dir.
 func extractOwned(r io.Reader, dir string) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
@@ -260,14 +324,15 @@ func extractOwned(r io.Reader, dir string) error {
 			continue
 		}
 		top, _, _ := strings.Cut(name, "/")
-		if _, owned := Owned[top]; !owned || top == name {
+		_, owned := Owned[top]
+		if !isUIFile(name) && (!owned || top == name) {
 			continue
 		}
 		if h.Size > maxFile {
 			return fmt.Errorf("%s: %d bytes, more than %d", name, h.Size, maxFile)
 		}
 		if total += h.Size; total > maxFiles {
-			return fmt.Errorf("the owned directories hold more than %d bytes", maxFiles)
+			return fmt.Errorf("the deployed files hold more than %d bytes", maxFiles)
 		}
 		dst := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
