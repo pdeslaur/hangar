@@ -7,6 +7,7 @@ to `ghcr.io/pdeslaur/<service>`.
 |---|---|
 | [alert-relay](cmd/alert-relay) | Sends a rule engine's alerts to a Matrix room through matrix-relay, once as they fire and once as they resolve. |
 | [cloudflared-svid](cmd/cloudflared-svid) | Runs a Cloudflare tunnel with credentials cloudflare-sts hands its SPIFFE identity. |
+| [ha-config-sync](cmd/ha-config-sync) | Keeps Home Assistant's automations, scripts and scenes in a GitHub repository, deploying its commits and syncing the UI's edits back. |
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
 | [jellyfin-sso](cmd/jellyfin-sso) | Puts Jellyfin behind single sign-on, apps included, with tokens of its own. |
 | [keybroker](cmd/keybroker) | Derives each workload's secrets from one master secret and its SPIFFE ID. |
@@ -30,20 +31,22 @@ module:
 GOFLAGS=-tags=goolm go test ./...
 ```
 
-Tests that need a real [tuwunel](https://github.com/matrix-construct/tuwunel)
-or [Jellyfin](https://jellyfin.org) run with docker when `TUWUNEL_IMAGE` or
-`JELLYFIN_IMAGE`, a linuxserver.io Jellyfin image, names one:
+Tests that need a real [tuwunel](https://github.com/matrix-construct/tuwunel),
+[Jellyfin](https://jellyfin.org) or [Home Assistant](https://www.home-assistant.io)
+run with docker when `TUWUNEL_IMAGE`, `JELLYFIN_IMAGE`, a linuxserver.io
+Jellyfin image, or `HOMEASSISTANT_IMAGE` names one:
 
 ```sh
 GOFLAGS=-tags=goolm \
     TUWUNEL_IMAGE=ghcr.io/matrix-construct/tuwunel:latest \
     JELLYFIN_IMAGE=lscr.io/linuxserver/jellyfin:latest \
+    HOMEASSISTANT_IMAGE=ghcr.io/home-assistant/home-assistant:stable \
     go test ./...
 ```
 
-CI runs the tests with the race detector and against tuwunel and Jellyfin,
-and checks that the code is formatted with `gofmt`, that `go.mod` is tidy,
-and that `go vet`, [staticcheck](https://staticcheck.dev) and
+CI runs the tests with the race detector and against tuwunel, Jellyfin and
+Home Assistant, and checks that the code is formatted with `gofmt`, that
+`go.mod` is tidy, and that `go vet`, [staticcheck](https://staticcheck.dev) and
 [govulncheck](https://go.dev/doc/security/vuln/) find nothing.
 
 ## Images

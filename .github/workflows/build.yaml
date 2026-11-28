@@ -118,9 +118,11 @@ jobs:
                   go test -race $(go list ./... | grep -v '/internal/relay$')
                   go test ./internal/relay
               env:
-                  # Also tests against a real tuwunel and Jellyfin, with docker.
+                  # Also tests against a real tuwunel, Jellyfin and Home
+                  # Assistant, with docker.
                   TUWUNEL_IMAGE: ghcr.io/matrix-construct/tuwunel:latest
                   JELLYFIN_IMAGE: lscr.io/linuxserver/jellyfin:latest
+                  HOMEASSISTANT_IMAGE: ghcr.io/home-assistant/home-assistant:stable
 
             - if: github.ref == 'refs/heads/main'
               uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

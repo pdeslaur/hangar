@@ -1,0 +1,10 @@
+{
+  "domain": "config_sync",
+  "name": "Config sync",
+  "codeowners": [],
+  "dependencies": ["persistent_notification"],
+  "documentation": "https://github.com/pdeslaur/hangar/tree/main/cmd/ha-config-sync",
+  "iot_class": "local_push",
+  "requirements": [],
+  "version": "1.0.0"
+}
