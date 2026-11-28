@@ -36,7 +36,9 @@ var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Hos
 // it found, in an Authorization header, or none: a Jellyfin token sent to
 // jellyfin-sso, an unknown or an expired one, reaches Jellyfin as no token at
 // all. Jellyfin gets the device's ID from the session, and the rest of the
-// device's description from the client when it gives one.
+// device's description from the client when it gives one. In a PlaybackInfo,
+// whose stream URLs carry the request's token, it puts the client's
+// jellyfin-sso token back in place of the Jellyfin token.
 //
 // It adds jellyfin-sso's script, /sso-static/sso.js, to jellyfin-web's
 // page, and a link to its account page, My devices, to jellyfin-web's menu.
@@ -90,12 +92,18 @@ const (
 	quickConnectLogin
 	// logout is Jellyfin's logout, which ends jellyfin-sso session.
 	logout
+	// playbackInfo is a response naming streams by URLs with the request's
+	// token in them, which hideToken changes.
+	playbackInfo
 	// refused never reaches Jellyfin.
 	refused
 )
 
 // userAuthenticate is Jellyfin's obsolete password login, by user ID.
 var userAuthenticate = regexp.MustCompile(`^/users/[^/]+/authenticate$`)
+
+// itemPlaybackInfo is Jellyfin's PlaybackInfo of an item.
+var itemPlaybackInfo = regexp.MustCompile(`^/items/[^/]+/playbackinfo$`)
 
 // routeOf returns the route of r, matching its path as ASP.NET does,
 // without case or a trailing slash.
@@ -112,17 +120,21 @@ func routeOf(r *http.Request) route {
 		return quickConnectLogin
 	case path == "/sessions/logout":
 		return logout
+	case (r.Method == http.MethodGet || r.Method == http.MethodPost) && itemPlaybackInfo.MatchString(path),
+		r.Method == http.MethodPost && path == "/livestreams/open":
+		return playbackInfo
 	case path == "/users/forgotpassword", path == "/users/forgotpassword/pin", userAuthenticate.MatchString(path):
 		return refused
 	}
 	return forward
 }
 
-// Context keys of a request to Jellyfin: its route, and the session it
-// carries the token of.
+// Context keys of a request to Jellyfin: its route, the session it carries
+// the token of, and that jellyfin-sso token.
 type (
 	routeKey   struct{}
 	sessionKey struct{}
+	tokenKey   struct{}
 )
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -138,8 +150,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		for _, h := range []string{"Accept-Encoding", "If-None-Match", "If-Modified-Since"} {
 			r.Header.Del(h)
 		}
-	case quickConnectLogin:
-		// Uncompressed, for adoptLogin to change.
+	case quickConnectLogin, playbackInfo:
+		// Uncompressed, for adoptLogin or hideToken to change.
 		r.Header.Del("Accept-Encoding")
 	case refused:
 		http.Error(w, "signing in is through single sign-on", http.StatusForbidden)
@@ -164,7 +176,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		device.Name = cmp.Or(c.device.Name, device.Name)
 		device.Version = cmp.Or(c.device.Version, device.Version)
 		r.Header.Set("Authorization", device.Header(session.JellyfinToken))
-		r = r.WithContext(context.WithValue(ctx, sessionKey{}, session))
+		ctx = context.WithValue(ctx, sessionKey{}, session)
+		r = r.WithContext(context.WithValue(ctx, tokenKey{}, c.token))
 	case errors.Is(err, errNoSession):
 		if c.token != "" {
 			p.logRefused(ctx, r, c.token)
@@ -237,7 +250,41 @@ func (p *Proxy) modifyResponse(resp *http.Response) error {
 		return addMenuLink(resp)
 	case quickConnectLogin:
 		return p.adoptLogin(resp)
+	case playbackInfo:
+		return hideToken(resp)
 	}
+	return nil
+}
+
+// maxPlaybackInfo bounds the size of a PlaybackInfo response that hideToken
+// reads.
+const maxPlaybackInfo = 4 << 20
+
+// hideToken replaces the session's Jellyfin token with the client's
+// jellyfin-sso token in a response naming streams, a PlaybackInfo's: Jellyfin
+// writes the request's token into URLs such as TranscodingUrl, which clients
+// fetch as they are, and would refuse with Jellyfin's. A response it can't
+// change fails the request, rather than reaching the client with Jellyfin's
+// token.
+func hideToken(resp *http.Response) error {
+	ctx := resp.Request.Context()
+	session, ok := ctx.Value(sessionKey{}).(Session)
+	if !ok || session.JellyfinToken == "" || resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+		return fmt.Errorf("a PlaybackInfo encoded as %s", enc)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxPlaybackInfo+1))
+	resp.Body.Close()
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxPlaybackInfo {
+		return fmt.Errorf("a PlaybackInfo over %d bytes", maxPlaybackInfo)
+	}
+	token, _ := ctx.Value(tokenKey{}).(string)
+	setBody(resp, bytes.ReplaceAll(raw, []byte(session.JellyfinToken), []byte(token)))
 	return nil
 }
 
