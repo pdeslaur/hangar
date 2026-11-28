@@ -162,10 +162,9 @@ func notifyResolved(annotations map[string]string) bool {
 // format returns an alert's message: its status and name, then its summary,
 // or its other labels without one, and its description on the lines after.
 func format(status string, labels, annotations map[string]string) string {
-	var b strings.Builder
-	b.WriteString(status + " " + cmp.Or(labels["alertname"], "alert"))
+	msg := status + " " + cmp.Or(labels["alertname"], "alert")
 	if summary := annotations["summary"]; summary != "" {
-		b.WriteString(": " + summary)
+		msg += ": " + summary
 	} else {
 		var pairs []string
 		for _, k := range slices.Sorted(maps.Keys(labels)) {
@@ -174,13 +173,13 @@ func format(status string, labels, annotations map[string]string) string {
 			}
 		}
 		if len(pairs) > 0 {
-			b.WriteString(" {" + strings.Join(pairs, ", ") + "}")
+			msg += " {" + strings.Join(pairs, ", ") + "}"
 		}
 	}
 	if description := annotations["description"]; description != "" {
-		b.WriteString("\n" + description)
+		msg += "\n" + description
 	}
-	return b.String()
+	return msg
 }
 
 // Sender posts messages to a room through matrix-relay's /send, as notices.
