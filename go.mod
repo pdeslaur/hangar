@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.1
 	github.com/chainguard-dev/clog v1.8.1
 	github.com/emersion/go-smtp v0.26.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/pdeslaur/cloudflare-sts v0.27.0
 	github.com/rs/zerolog v1.35.1
