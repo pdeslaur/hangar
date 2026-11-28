@@ -69,7 +69,7 @@ func TestTakeCredentials(t *testing.T) {
 		name:    "authorization's token first",
 		url:     "/Users/Me?api_key=ghi",
 		headers: map[string]string{"Authorization": web.Header("abc"), "X-Emby-Token": "def"},
-		want:    credentials{device: web, token: "abc"},
+		want:    credentials{device: web, token: "abc", inQuery: true},
 	}, {
 		name:    "x-emby-token",
 		url:     "/Users/Me",
@@ -83,22 +83,22 @@ func TestTakeCredentials(t *testing.T) {
 	}, {
 		name:      "apikey in the query, others kept as they were",
 		url:       "/Videos/1/stream?static=true&ApiKey=abc&Tag=a%2Bb",
-		want:      credentials{token: "abc"},
+		want:      credentials{token: "abc", inQuery: true},
 		wantQuery: "static=true&Tag=a%2Bb",
 	}, {
 		name:      "apikey in any case, before api_key",
 		url:       "/socket?api_key=def&APIKEY=abc&deviceId=x",
-		want:      credentials{token: "abc"},
+		want:      credentials{token: "abc", inQuery: true},
 		wantQuery: "deviceId=x",
 	}, {
 		name:      "an encoded name",
 		url:       "/socket?Api%4Bey=abc",
-		want:      credentials{token: "abc"},
+		want:      credentials{token: "abc", inQuery: true},
 		wantQuery: "",
 	}, {
 		name:      "twice, joined as ASP.NET joins them",
 		url:       "/Users/Me?ApiKey=abc&ApiKey=def",
-		want:      credentials{token: "abc,def"},
+		want:      credentials{token: "abc,def", inQuery: true},
 		wantQuery: "",
 	}} {
 		t.Run(tc.name, func(t *testing.T) {

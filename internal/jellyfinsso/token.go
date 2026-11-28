@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/hex"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/pdeslaur/hangar/internal/jellyfin"
@@ -26,6 +27,9 @@ type credentials struct {
 	device jellyfin.Device
 	// token is the one Jellyfin would take, empty if none.
 	token string
+	// inQuery is whether the query held a token, which the caller puts
+	// back there for Jellyfin to copy into its HLS playlists.
+	inQuery bool
 }
 
 // takeCredentials returns the device and token Jellyfin would read from r,
@@ -57,7 +61,17 @@ func takeCredentials(r *http.Request) credentials {
 	query, apiKey, legacyKey := takeQueryTokens(r.URL.RawQuery)
 	r.URL.RawQuery = query
 	c.token = cmp.Or(c.token, join(apiKey), join(legacyKey))
+	c.inQuery = len(apiKey) > 0 || len(legacyKey) > 0
 	return c
+}
+
+// withAPIKey returns query with an ApiKey parameter of token added.
+func withAPIKey(query, token string) string {
+	param := "ApiKey=" + url.QueryEscape(token)
+	if query == "" {
+		return param
+	}
+	return query + "&" + param
 }
 
 // join joins the values of a header or query parameter given more than once
