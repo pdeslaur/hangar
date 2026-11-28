@@ -171,11 +171,14 @@ jobs:
             # select more. A change to go.mod, go.sum, .ko.yaml or this
             # workflow, a BASE that can't be fetched, and a run with no BASE,
             # as the daily rebuild for base image fixes, select them all.
+            # commands.txt lives in RUNNER_TEMP, outside the checkout: ko
+            # reads git state for commands with a build config in .ko.yaml,
+            # and an untracked file there has it warn the tree is dirty.
             - name: Select commands
               env:
                   BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
               run: |
-                  go list ./cmd/... >commands.txt
+                  go list ./cmd/... >"${RUNNER_TEMP}/commands.txt"
                   if [ -z "${BASE}" ] || ! git fetch --quiet --depth=1 origin "${BASE}"; then
                       echo "No base to compare with: building every command."
                       exit 0
@@ -186,7 +189,7 @@ jobs:
                       exit 0
                   fi
                   root=$(pwd)
-                  for command in $(cat commands.txt); do
+                  for command in $(cat "${RUNNER_TEMP}/commands.txt"); do
                       # The command's packages in this module, as directories
                       # relative to its root.
                       dirs=$(go list -deps -f '{{with .Module}}{{if .Main}}{{$.Dir}}{{end}}{{end}}' "${command}" | sed "s|^${root}/||")
@@ -196,10 +199,10 @@ jobs:
                               break
                           fi
                       done
-                  done >selected.txt
-                  mv selected.txt commands.txt
+                  done >"${RUNNER_TEMP}/selected.txt"
+                  mv "${RUNNER_TEMP}/selected.txt" "${RUNNER_TEMP}/commands.txt"
                   echo "Building:"
-                  cat commands.txt
+                  cat "${RUNNER_TEMP}/commands.txt"
 
             # Each command publishes to ghcr.io/<owner>/<its directory name>.
             # Without the commit stamped into the binaries, an image's digest
@@ -241,7 +244,7 @@ jobs:
                   while read -r command; do
                       publish "${command}" &
                       pids+=($!)
-                  done <commands.txt
+                  done <"${RUNNER_TEMP}/commands.txt"
                   status=0
                   for pid in "${pids[@]}"; do
                       wait "${pid}" || status=1
@@ -251,8 +254,8 @@ jobs:
             - name: Build only
               if: github.event_name == 'pull_request'
               run: |
-                  if [ -s commands.txt ]; then
-                      xargs --max-procs=0 --max-args=1 ko build --local --platform=linux/amd64 --base-import-paths <commands.txt
+                  if [ -s "${RUNNER_TEMP}/commands.txt" ]; then
+                      xargs --max-procs=0 --max-args=1 ko build --local --platform=linux/amd64 --base-import-paths <"${RUNNER_TEMP}/commands.txt"
                   fi
 
             - if: github.ref == 'refs/heads/main'
