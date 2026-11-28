@@ -5,12 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/pdeslaur/hangar/internal/jellyfin"
 	"github.com/pdeslaur/hangar/internal/jellyfin/jellyfintest"
 )
+
+// TestMain removes the Jellyfin the tests share.
+func TestMain(m *testing.M) { os.Exit(jellyfintest.Main(m)) }
 
 // upgrade asks for a WebSocket at url and returns the status.
 func upgrade(t *testing.T, url string) int {
@@ -33,7 +37,7 @@ func upgrade(t *testing.T, url string) int {
 
 // TestProxyJellyfin sends requests through the proxy to a real Jellyfin.
 func TestProxyJellyfin(t *testing.T) {
-	s := jellyfintest.Start(t)
+	s := jellyfintest.Shared(t)
 	ctx := context.Background()
 	c := &jellyfin.Client{URL: s.URL, Key: jellyfintest.Key, HTTP: http.DefaultClient}
 	store, _ := openStore(t)

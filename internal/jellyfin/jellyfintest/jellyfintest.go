@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,22 +29,102 @@ type Server struct {
 	// "alice" and "bob".
 	Users map[string]string
 
+	// t is the test that started it, which its setup reports to.
 	t *testing.T
 	// id is the container's.
 	id string
+	// dir is its /config.
+	dir string
 }
 
 // Start runs the linuxserver.io Jellyfin image named by JELLYFIN_IMAGE with
 // docker, completes its startup wizard, creates its users, writes Key into
-// its database and enables Quick Connect. Without JELLYFIN_IMAGE, the test
-// is skipped.
+// its database and enables Quick Connect, for t alone. Without
+// JELLYFIN_IMAGE, the test is skipped.
 func Start(t *testing.T) *Server {
+	t.Helper()
+	s := run(t, image(t), t.TempDir())
+	t.Cleanup(func() {
+		s.logIfFailed(t)
+		s.remove()
+	})
+	s.setUp()
+	return s
+}
+
+// shared is the Server that Shared starts for the tests of a package, which
+// Main removes once they ran.
+var shared struct {
+	once sync.Once
+	// main is whether the package's tests run through Main.
+	main bool
+	// dir is the Server's /config, which outlives the test that started it.
+	dir string
+	s   *Server
+	// ready is whether the Server is set up.
+	ready bool
+}
+
+// Shared returns a Server, as Start does, shared by the tests of a package
+// that runs them through Main: the first test to call it starts it. Tests
+// sharing it name their devices apart, since Jellyfin keeps one token per
+// device.
+func Shared(t *testing.T) *Server {
+	t.Helper()
+	img := image(t)
+	if !shared.main {
+		t.Fatal("jellyfintest.Shared needs TestMain to call jellyfintest.Main")
+	}
+	t.Cleanup(func() {
+		if shared.s != nil {
+			shared.s.logIfFailed(t)
+		}
+	})
+	shared.once.Do(func() {
+		dir, err := os.MkdirTemp("", "jellyfintest")
+		if err != nil {
+			t.Fatal(err)
+		}
+		shared.dir = dir
+		shared.s = run(t, img, dir)
+		shared.s.setUp()
+		shared.ready = true
+	})
+	if !shared.ready {
+		t.Fatal("jellyfin failed to start in an earlier test")
+	}
+	return shared.s
+}
+
+// Main runs the tests of m, then removes the Server Shared started for them.
+// A package whose tests call Shared calls it from its TestMain:
+//
+//	func TestMain(m *testing.M) { os.Exit(jellyfintest.Main(m)) }
+func Main(m *testing.M) int {
+	shared.main = true
+	code := m.Run()
+	if shared.s != nil {
+		shared.s.remove()
+	}
+	if shared.dir != "" {
+		os.RemoveAll(shared.dir)
+	}
+	return code
+}
+
+// image returns the image named by JELLYFIN_IMAGE, skipping t without one.
+func image(t *testing.T) string {
 	t.Helper()
 	image := os.Getenv("JELLYFIN_IMAGE")
 	if image == "" {
 		t.Skip("JELLYFIN_IMAGE unset, like lscr.io/linuxserver/jellyfin:latest")
 	}
-	dir := t.TempDir()
+	return image
+}
+
+// run starts a container of image, its /config in dir, reporting to t.
+func run(t *testing.T, image, dir string) *Server {
+	t.Helper()
 	out, err := exec.Command("docker", "run", "--detach",
 		"--publish", "127.0.0.1::8096",
 		"--volume", dir+":/config",
@@ -54,14 +135,26 @@ func Start(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("starting jellyfin: %v", err)
 	}
-	s := &Server{t: t, id: strings.TrimSpace(string(out))}
-	t.Cleanup(func() {
-		if t.Failed() {
-			logs, _ := exec.Command("docker", "logs", "--tail", "100", s.id).CombinedOutput()
-			t.Logf("jellyfin logs:\n%s", logs)
-		}
-		exec.Command("docker", "rm", "--force", s.id).Run()
-	})
+	return &Server{t: t, id: strings.TrimSpace(string(out)), dir: dir}
+}
+
+// logIfFailed logs the container's last lines if t failed.
+func (s *Server) logIfFailed(t *testing.T) {
+	if t.Failed() {
+		logs, _ := exec.Command("docker", "logs", "--tail", "100", s.id).CombinedOutput()
+		t.Logf("jellyfin logs:\n%s", logs)
+	}
+}
+
+// remove removes the container.
+func (s *Server) remove() {
+	exec.Command("docker", "rm", "--force", s.id).Run()
+}
+
+// setUp completes Jellyfin's startup wizard, creates its users, writes Key
+// into its database and enables Quick Connect.
+func (s *Server) setUp() {
+	s.t.Helper()
 	s.wait()
 
 	s.call(http.MethodPost, "/Startup/Configuration", "", map[string]string{"UICulture": "en-US", "MetadataCountryCode": "US", "PreferredMetadataLanguage": "en"}, nil)
@@ -78,8 +171,8 @@ func Start(t *testing.T) *Server {
 	// Jellyfin takes a key written while it runs, but SQLite's WAL locks
 	// don't cross the file sharing of Docker on macOS: write it stopped.
 	s.docker("stop")
-	if err := jellyfin.EnsureAPIKey(context.Background(), filepath.Join(dir, "data", "data", "jellyfin.db"), "jellyfin-sso", Key); err != nil {
-		t.Fatalf("EnsureAPIKey: %v", err)
+	if err := jellyfin.EnsureAPIKey(context.Background(), filepath.Join(s.dir, "data", "data", "jellyfin.db"), "jellyfin-sso", Key); err != nil {
+		s.t.Fatalf("EnsureAPIKey: %v", err)
 	}
 	s.docker("start")
 	s.wait()
@@ -99,7 +192,6 @@ func Start(t *testing.T) *Server {
 	for _, u := range users {
 		s.Users[u.Name] = u.ID
 	}
-	return s
 }
 
 // wait finds the container's port, which changes when it restarts, and

@@ -138,7 +138,7 @@ var storedSession = regexp.MustCompile(`jellyfinSSO\.store\((\{.*?\})\);`)
 // TestLoginJellyfin signs browsers in against a real Jellyfin, refreshes
 // their tokens, and uses them through the proxy.
 func TestLoginJellyfin(t *testing.T) {
-	s := jellyfintest.Start(t)
+	s := jellyfintest.Shared(t)
 	ctx := context.Background()
 	store, _ := openStore(t)
 	store.now = time.Now
