@@ -21,10 +21,7 @@ env:
 permissions:
     contents: read
 
-# Each job keeps its own Go cache, since each compiles differently: lint for
-# vet and staticcheck, test with -race, build for arm64 too. A job restores
-# its newest cache and, on main, saves a new one every run, so the cache
-# follows the code rather than go.sum. Pull requests only read main's caches.
+# Each job keeps its own Go cache, saved only on main.
 jobs:
     lint:
         runs-on: ubuntu-latest
@@ -65,8 +62,7 @@ jobs:
 
             - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
-            # gopls runs analyzers that vet and staticcheck don't, such as
-            # writestring. It prints its diagnostics but always exits zero.
+            # gopls check always exits zero.
             - name: gopls check
               run: |
                   diagnostics=$(go run golang.org/x/tools/gopls@v0.24.0 check $(git ls-files '*.go'))
@@ -85,7 +81,6 @@ jobs:
                       ~/go/pkg/mod
                   key: ${{ steps.cache.outputs.cache-primary-key }}
 
-    # Runs tuwunel:latest, so holds no permission to publish.
     test:
         runs-on: ubuntu-latest
         steps:
@@ -110,16 +105,12 @@ jobs:
                       go-${{ github.job }}-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.sum') }}-
                       go-${{ github.job }}-${{ steps.go.outputs.go-version }}-
 
-            # mautrix's OlmMachine caches its own cross-signing keys without a
-            # lock, so a client that sends while it syncs races inside
-            # mautrix. internal/relay runs without the race detector until
-            # mautrix guards that cache.
+            # internal/relay skips -race: mautrix's OlmMachine races on its
+            # cross-signing key cache.
             - run: |
                   go test -race $(go list ./... | grep -v '/internal/relay$')
                   go test ./internal/relay
               env:
-                  # Also tests against a real tuwunel, Jellyfin and Home
-                  # Assistant, with docker.
                   TUWUNEL_IMAGE: ghcr.io/matrix-construct/tuwunel:latest
                   JELLYFIN_IMAGE: lscr.io/linuxserver/jellyfin:latest
                   HOMEASSISTANT_IMAGE: ghcr.io/home-assistant/home-assistant:stable
@@ -165,17 +156,13 @@ jobs:
 
             - uses: sigstore/cosign-installer@881c63bd87e38389154debd8331404ce7ca8a3ab # v4.1.4
 
-            # Writes to commands.txt the commands this change can reach: those
-            # depending on a package of this module with a file changed since
-            # BASE, test files aside, as a prefix of the path, which can only
-            # select more. A change to go.mod, go.sum, .ko.yaml or this
-            # workflow, a BASE that can't be fetched, and a run with no BASE,
-            # as the daily rebuild for base image fixes, select them all.
+            # Lists the commands depending on a package changed since BASE.
+            # Kept outside the checkout, or ko warns the tree is dirty.
             - name: Select commands
               env:
                   BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
               run: |
-                  go list ./cmd/... >commands.txt
+                  go list ./cmd/... >"${RUNNER_TEMP}/commands.txt"
                   if [ -z "${BASE}" ] || ! git fetch --quiet --depth=1 origin "${BASE}"; then
                       echo "No base to compare with: building every command."
                       exit 0
@@ -186,9 +173,7 @@ jobs:
                       exit 0
                   fi
                   root=$(pwd)
-                  for command in $(cat commands.txt); do
-                      # The command's packages in this module, as directories
-                      # relative to its root.
+                  for command in $(cat "${RUNNER_TEMP}/commands.txt"); do
                       dirs=$(go list -deps -f '{{with .Module}}{{if .Main}}{{$.Dir}}{{end}}{{end}}' "${command}" | sed "s|^${root}/||")
                       for dir in ${dirs}; do
                           if grep -q "^${dir}/" <<<"${changed}"; then
@@ -196,15 +181,13 @@ jobs:
                               break
                           fi
                       done
-                  done >selected.txt
-                  mv selected.txt commands.txt
+                  done >"${RUNNER_TEMP}/selected.txt"
+                  mv "${RUNNER_TEMP}/selected.txt" "${RUNNER_TEMP}/commands.txt"
                   echo "Building:"
-                  cat commands.txt
+                  cat "${RUNNER_TEMP}/commands.txt"
 
-            # Each command publishes to ghcr.io/<owner>/<its directory name>.
-            # Without the commit stamped into the binaries, an image's digest
-            # changes only when what it's built from does, and a digest this
-            # workflow already signed isn't signed again.
+            # -buildvcs=false keeps digests stable across commits, so an
+            # unchanged image isn't signed again.
             - name: Build and push
               if: github.event_name != 'pull_request'
               env:
@@ -213,9 +196,7 @@ jobs:
                   IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/build.yaml@${{ github.ref }}
                   SOURCE: https://github.com/${{ github.repository }}
               run: |
-                  # Each sign runs in its own process, with its own TUF cache
-                  # in TUF_ROOT: cosigns sharing ~/.sigstore race to write its
-                  # metadata, and one fails with "failed to persist metadata".
+                  # Parallel cosigns sharing ~/.sigstore race on its metadata.
                   sign() {
                       TUF_ROOT=$(mktemp -d)
                       export TUF_ROOT
@@ -235,13 +216,11 @@ jobs:
                           "$1") || return
                       sign "${image}"
                   }
-                  # Publishes the commands in parallel, failing if any fails:
-                  # one ko publishes its images one at a time.
                   pids=()
                   while read -r command; do
                       publish "${command}" &
                       pids+=($!)
-                  done <commands.txt
+                  done <"${RUNNER_TEMP}/commands.txt"
                   status=0
                   for pid in "${pids[@]}"; do
                       wait "${pid}" || status=1
@@ -251,8 +230,8 @@ jobs:
             - name: Build only
               if: github.event_name == 'pull_request'
               run: |
-                  if [ -s commands.txt ]; then
-                      xargs --max-procs=0 --max-args=1 ko build --local --platform=linux/amd64 --base-import-paths <commands.txt
+                  if [ -s "${RUNNER_TEMP}/commands.txt" ]; then
+                      xargs --max-procs=0 --max-args=1 ko build --local --platform=linux/amd64 --base-import-paths <"${RUNNER_TEMP}/commands.txt"
                   fi
 
             - if: github.ref == 'refs/heads/main'
