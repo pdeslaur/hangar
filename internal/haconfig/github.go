@@ -112,3 +112,23 @@ func (g *GitHub) SetBranch(ctx context.Context, branch, sha string) error {
 	_, _, err = g.Git.CreateRef(ctx, g.Owner, g.Repo, github.CreateRef{Ref: ref, SHA: sha})
 	return err
 }
+
+// Root returns the tree commit points at, and the git hashes of the files at
+// its top, by path.
+func (g *GitHub) Root(ctx context.Context, commit string) (tree string, blobs map[string]string, err error) {
+	c, _, err := g.Git.GetCommit(ctx, g.Owner, g.Repo, commit)
+	if err != nil {
+		return "", nil, err
+	}
+	t, _, err := g.Git.GetTree(ctx, g.Owner, g.Repo, c.GetTree().GetSHA(), false)
+	if err != nil {
+		return "", nil, err
+	}
+	blobs = map[string]string{}
+	for _, e := range t.Entries {
+		if e.GetType() == "blob" {
+			blobs[e.GetPath()] = e.GetSHA()
+		}
+	}
+	return t.GetSHA(), blobs, nil
+}

@@ -244,6 +244,7 @@ func TestExtractOwnedKeepsOnlyOwnedRegularFiles(t *testing.T) {
 	}
 	add(&tar.Header{Typeflag: tar.TypeReg, Name: "top/automations/a.yaml"}, "a")
 	add(&tar.Header{Typeflag: tar.TypeReg, Name: "top/packages/nested/p.yaml"}, "p")
+	add(&tar.Header{Typeflag: tar.TypeReg, Name: "top/automations.yaml"}, "ui")
 	add(&tar.Header{Typeflag: tar.TypeReg, Name: "top/configuration.yaml"}, "not owned")
 	add(&tar.Header{Typeflag: tar.TypeReg, Name: "top/automations/../../escape.yaml"}, "escape")
 	add(&tar.Header{Typeflag: tar.TypeSymlink, Name: "top/scripts/link.yaml", Linkname: "/etc/passwd"}, "")
@@ -266,6 +267,7 @@ func TestExtractOwnedKeepsOnlyOwnedRegularFiles(t *testing.T) {
 	want := map[string]string{
 		filepath.Join("automations", "a.yaml"):        "a",
 		filepath.Join("packages", "nested", "p.yaml"): "p",
+		"automations.yaml":                            "ui",
 	}
 	if len(got) != len(want) {
 		t.Errorf("extracted %d files, want %d: %v", len(got), len(want), got)
@@ -308,5 +310,85 @@ func TestRestoreAfterPartialSwap(t *testing.T) {
 		if got := readFile(t, filepath.Join(dir, name, "x.yaml")); got != "live "+name {
 			t.Errorf("%s/x.yaml = %q after restore", name, got)
 		}
+	}
+}
+
+func TestDeployWritesUIFilesOnlyTheRepositoryChanged(t *testing.T) {
+	d, gh, fh := newDeployer(t)
+	ctx := context.Background()
+	disk := filepath.Join(d.Dir, "automations.yaml")
+	apply := func(content string) string {
+		t.Helper()
+		sha := gh.commit("main", map[string]string{"automations.yaml": content, "scripts.yaml": "{}\n"})
+		gh.setChecks(sha, "completed", "success")
+		if err := d.Poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return sha
+	}
+
+	// Home Assistant's copies, as its first sync committed them.
+	writeFile(t, disk, "ui\n")
+	writeFile(t, filepath.Join(d.Dir, "scripts.yaml"), "{}\n")
+	apply("ui\n")
+
+	// The repository edits it: written, and reloaded.
+	apply("repo\n")
+	if got := readFile(t, disk); got != "repo\n" {
+		t.Errorf("automations.yaml = %q, want the repository's", got)
+	}
+	if got, want := fh.calls().reloads, [][]string{{ReloadAutomation}}; !slices.EqualFunc(got, want, slices.Equal) {
+		t.Errorf("reloads = %v, want %v", got, want)
+	}
+
+	// The UI edits it, and so does the repository, before the UI's sync
+	// merged: the commit is skipped, and the UI's edit stays.
+	writeFile(t, disk, "ui again\n")
+	conflicting := apply("repo again\n")
+	if got := readFile(t, disk); got != "ui again\n" {
+		t.Errorf("automations.yaml = %q, want the UI's edit kept", got)
+	}
+	calls := fh.calls()
+	if len(calls.failed) != 1 || !strings.Contains(calls.failed[0], "automations.yaml") || !strings.Contains(calls.failed[0], "Kept the UI's edits") {
+		t.Errorf("failed = %q, want the conflict", calls.failed)
+	}
+	if d.state.Skipped != conflicting {
+		t.Errorf("skipped = %q, want %q", d.state.Skipped, conflicting)
+	}
+
+	// The UI's sync merges: Home Assistant already has it, so nothing to
+	// write or reload.
+	apply("ui again\n")
+	calls = fh.calls()
+	if len(calls.reloads) != 1 || len(calls.checked) != 1 {
+		t.Errorf("reloads %v and %d checks after the UI's sync merged, want none new", calls.reloads, len(calls.checked))
+	}
+	if got := readFile(t, disk); got != "ui again\n" {
+		t.Errorf("automations.yaml = %q", got)
+	}
+}
+
+func TestDeployRollsBackRefusedUIFile(t *testing.T) {
+	d, gh, fh := newDeployer(t)
+	ctx := context.Background()
+	disk := filepath.Join(d.Dir, "scripts.yaml")
+	writeFile(t, disk, "{}\n")
+	first := gh.commit("main", map[string]string{"scripts.yaml": "{}\n"})
+	gh.setChecks(first, "completed", "success")
+	if err := d.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	bad := gh.commit("main", map[string]string{"scripts.yaml": "bed: [\n"})
+	gh.setChecks(bad, "completed", "success")
+	fh.setErrors("while parsing a flow node")
+	if err := d.Poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, disk); got != "{}\n" {
+		t.Errorf("scripts.yaml = %q after the rollback, want Home Assistant's", got)
+	}
+	if calls := fh.calls(); len(calls.failed) != 1 || !strings.Contains(calls.failed[0], "rolled back") {
+		t.Errorf("failed = %q", calls.failed)
 	}
 }
