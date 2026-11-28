@@ -162,7 +162,7 @@ var sessionRowHTML = regexp.MustCompile(`<td>([^<(]+?)(?: \(browser\))?</td>\s*<
 // with Quick Connect approved on jellyfin-sso's page and on jellyfin-web's,
 // and with a one-time code, and revokes one.
 func TestAppsJellyfin(t *testing.T) {
-	s := jellyfintest.Start(t)
+	s := jellyfintest.Shared(t)
 	ctx := context.Background()
 	store, _ := openStore(t)
 	store.now = time.Now
