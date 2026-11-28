@@ -72,7 +72,7 @@ func TestProxy(t *testing.T) {
 	}, {
 		name: "a jellyfin-sso token in the query",
 		url:  "/Videos/1/stream?static=true&ApiKey=" + token,
-		want: received{Authorization: session.Device.Header("real"), Query: "static=true"},
+		want: received{Authorization: session.Device.Header("real"), Query: "static=true&ApiKey=real"},
 	}, {
 		name:    "a jellyfin-sso token in a legacy header",
 		url:     "/Users/Me",
@@ -306,7 +306,7 @@ func TestProxyHidesTokenInPlaybackInfo(t *testing.T) {
 		body := `{"MediaSources":[{"Id":"abc","TranscodingUrl":"/videos/1/master.m3u8?DeviceId=dev1&MediaSourceId=abc&ApiKey=` + tok + `"}],"PlaySessionId":"p1"}`
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Has("huge") {
-			body += strings.Repeat(" ", maxPlaybackInfo)
+			body += strings.Repeat(" ", maxStreamURLs)
 		}
 		switch {
 		case r.URL.Query().Has("br"):
@@ -393,5 +393,81 @@ func TestProxyHidesTokenInPlaybackInfo(t *testing.T) {
 				t.Errorf("TranscodingUrl's ApiKey %q, want %q", got, tc.apiKey)
 			}
 		})
+	}
+}
+
+func TestProxyHLS(t *testing.T) {
+	// Like Jellyfin, it copies the request's query into its playlists' URLs,
+	// and names subtitles by a URL with the request's token.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tok := parseAuthorization(r.Header.Get("Authorization"))["Token"]
+		// Refused with 403 rather than Jellyfin's 401, which would have the
+		// proxy ask a Jellyfin this test doesn't have about the session.
+		if tok != "real" || r.URL.Query().Get("ApiKey") != "real" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-mpegURL")
+		switch r.URL.Path {
+		case "/videos/1/master.m3u8":
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-MEDIA:TYPE=SUBTITLES,URI=\"/videos/1/1/Subtitles/2/subtitles.m3u8?ApiKey=%s\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\nmain.m3u8?%s\n", tok, r.URL.RawQuery)
+		case "/videos/1/main.m3u8":
+			fmt.Fprintf(w, "#EXTM3U\n#EXTINF:3,\nhls1/main/0.mp4?%s\n", r.URL.RawQuery)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	ctx := context.Background()
+	s, _ := openStore(t)
+	session := newSession(t, s, Browser)
+	token, err := s.IssueToken(ctx, session.ID, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewProxy(target, NewApps(s, nil))
+
+	// get fetches a playlist through p, as hls.js does, and returns the URLs
+	// it names.
+	get := func(u *url.URL) []*url.URL {
+		t.Helper()
+		w := httptest.NewRecorder()
+		p.ServeHTTP(w, httptest.NewRequest(http.MethodGet, u.String(), nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d", u, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "real") {
+			t.Errorf("GET %s: Jellyfin's token in %s", u, w.Body)
+		}
+		var urls []*url.URL
+		for line := range strings.Lines(w.Body.String()) {
+			line = strings.TrimSpace(line)
+			if _, uri, ok := strings.Cut(line, `URI="`); ok {
+				line = strings.TrimSuffix(uri, `"`)
+			} else if strings.HasPrefix(line, "#") {
+				continue
+			}
+			ref, err := url.Parse(line)
+			if err != nil {
+				t.Fatal(err)
+			}
+			urls = append(urls, u.ResolveReference(ref))
+		}
+		return urls
+	}
+	master, _ := url.Parse("/videos/1/master.m3u8?MediaSourceId=abc&ApiKey=" + token)
+	urls := get(master)
+	if len(urls) != 2 {
+		t.Fatalf("master playlist names %v", urls)
+	}
+	for _, u := range urls {
+		if got := u.Query().Get("ApiKey"); got != token {
+			t.Errorf("%s: ApiKey %q, want the client's", u, got)
+		}
+	}
+	segments := get(urls[1])
+	if len(segments) != 1 || segments[0].Query().Get("ApiKey") != token || segments[0].Query().Get("MediaSourceId") != "abc" {
+		t.Errorf("main playlist names %v", segments)
 	}
 }
