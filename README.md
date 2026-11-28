@@ -5,6 +5,7 @@ to `ghcr.io/pdeslaur/<service>`.
 
 | Service | |
 |---|---|
+| [alert-relay](cmd/alert-relay) | Sends a rule engine's alerts to a Matrix room through matrix-relay, once as they fire and once as they resolve. |
 | [cloudflared-svid](cmd/cloudflared-svid) | Runs a Cloudflare tunnel with credentials cloudflare-sts hands its SPIFFE identity. |
 | [matrix-relay](cmd/matrix-relay) | Keeps an end-to-end encrypted Matrix session for an app that can't. |
 | [jellyfin-sso](cmd/jellyfin-sso) | Puts Jellyfin behind single sign-on, apps included, with tokens of its own. |
